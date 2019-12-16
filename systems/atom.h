@@ -8,11 +8,11 @@
     ~~~C
     #define CHIPS_IMPL
     ~~~
-    before you include this file in *one* C or C++ file to create the 
+    before you include this file in *one* C or C++ file to create the
     implementation.
 
     Optionally provide the following macros with your own implementation
-    
+
     ~~~C
     CHIPS_ASSERT(c)
     ~~~
@@ -55,7 +55,7 @@
         2. Altered source versions must be plainly marked as such, and must not
         be misrepresented as being the original software.
         3. This notice may not be removed or altered from any source
-        distribution. 
+        distribution.
 */
 #include <stdint.h>
 #include <stdbool.h>
@@ -118,6 +118,7 @@ typedef struct {
     mc6847_t vdg;
     i8255_t ppi;
     m6522_t via;
+    atommc_t atommc;
     beeper_t beeper;
     bool valid;
     int counter_2_4khz;
@@ -200,6 +201,8 @@ static uint8_t _atom_ppi_in(int port_id, void* user_data);
 static uint64_t _atom_ppi_out(int port_id, uint64_t pins, uint8_t data, void* user_data);
 static uint8_t _atom_via_in(int port_id, void* user_data);
 static void _atom_via_out(int port_id, uint8_t data, void* user_data);
+static uint8_t _atom_atommc_in(int port_id, void* user_data);
+static void _atom_atommc_out(int port_id, uint8_t data, void* user_data);
 static void _atom_init_keymap(atom_t* sys);
 static void _atom_init_memorymap(atom_t* sys);
 static uint64_t _atom_osload(atom_t* sys, uint64_t pins);
@@ -255,6 +258,13 @@ void atom_init(atom_t* sys, const atom_desc_t* desc) {
     via_desc.user_data = sys;
     m6522_init(&sys->via, &via_desc);
 
+    atommc_desc_t atommc_desc;
+    _ATOM_CLEAR(atommc_desc);
+    atommc_desc.in_cb = _atom_atommc_in;
+    atommc_desc.out_cb = _atom_atommc_out;
+    atommc_desc.user_data = sys;
+    atommc_init(&sys->atommc, &atommc_desc);
+
     const int audio_hz = _ATOM_DEFAULT(desc->audio_sample_rate, 44100);
     const float audio_vol = _ATOM_DEFAULT(desc->audio_volume, 0.5f);
     beeper_init(&sys->beeper, ATOM_FREQUENCY, audio_hz, audio_vol);
@@ -296,6 +306,7 @@ void atom_reset(atom_t* sys) {
     sys->pins |= M6502_RES;
     i8255_reset(&sys->ppi);
     m6522_reset(&sys->via);
+    atommc_reset(&sys->atommc);
     mc6847_reset(&sys->vdg);
     beeper_reset(&sys->beeper);
     sys->state_2_4khz = false;
@@ -381,6 +392,9 @@ uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
     /* tick the 6522 VIA */
     m6522_tick(&sys->via);
 
+    /* tick the AtoMMC */
+    atommc_tick(&sys->atommc);
+
     /* tick the 2.4khz counter */
     sys->counter_2_4khz++;
     if (sys->counter_2_4khz >= sys->period_2_4khz) {
@@ -412,33 +426,14 @@ uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
             if (pins & M6502_A0) { ppi_pins |= I8255_A0; }  /* PPI has 4 addresses (port A,B,C or control word */
             if (pins & M6502_A1) { ppi_pins |= I8255_A1; }
             pins = i8255_iorq(&sys->ppi, ppi_pins) & M6502_PIN_MASK;
-        }       
+        }
         else if ((addr >= 0xB400) && (addr < 0xB800)) {
-            /* extensions (only rudimentary)
-                FIXME: implement a proper AtoMMC emulation, for now just
-                a quick'n'dirty hack for joystick input
-            */
-            if (pins & M6502_RW) {
-                /* read from MMC extension */
-                if (addr == 0xB400) {
-                    /* reading from 0xB400 returns a status/error code, the important
-                        ones are STATUS_OK=0x3F, and STATUS_BUSY=0x80, STATUS_COMPLETE
-                        together with an error code is used to communicate errors
-                    */
-                    M6502_SET_DATA(pins, 0x3F);
-                }
-                else if ((addr == 0xB401) && (sys->mmc_cmd == 0xA2)) {
-                    /* read MMC joystick */
-                    M6502_SET_DATA(pins, ~(sys->kbd_joymask | sys->joy_joymask));
-                }
-            }
-            else {
-                /* write to MMC extension */
-                if (addr == 0xB400) {
-                    sys->mmc_cmd = M6502_GET_DATA(pins);
-                }
-            }
-        } 
+
+            uint64_t atommc_pins = (pins & M6502_PIN_MASK)|ATOMMC_CS;
+            /* NOTE: ATOMMC_RW pin is identical with M6502_RW) */
+            pins = atommc_iorq(&sys->atommc, atommc_pins) & M6502_PIN_MASK;
+
+        }
         else if ((addr >= 0xB800) && (addr < 0xBC00)) {
             /* 6522 VIA: http://www.acornatom.nl/sites/fpga/www.howell1964.freeserve.co.uk/acorn/atom/amb/amb_6522.htm */
             uint64_t via_pins = (pins & M6502_PIN_MASK)|M6522_CS1;
@@ -602,6 +597,16 @@ static uint8_t _atom_via_in(int port_id, void* user_data) {
     return 0x00;
 }
 
+static void _atom_atommc_out(int port_id, uint8_t data, void* user_data) {
+    /* FIXME */
+}
+
+static uint8_t _atom_atommc_in(int port_id, void* user_data) {
+    /* FIXME */
+    return 0x00;
+}
+
+
 static void _atom_init_keymap(atom_t* sys) {
     /*  setup the keyboard matrix
         the Atom has a 10x8 keyboard matrix, where the
@@ -614,7 +619,7 @@ static void _atom_init_keymap(atom_t* sys) {
     /* ctrl key is entire line 6 */
     const int ctrl = (1<<1); kbd_register_modifier_line(&sys->kbd, 1, 6);
     /* alpha-numeric keys */
-    const char* keymap = 
+    const char* keymap =
         /* no shift */
         "     ^]\\[ "/**/"3210      "/* */"-,;:987654"/**/"GFEDCBA@/."/**/"QPONMLKJIH"/**/" ZYXWVUTSR"
         /* shift */
