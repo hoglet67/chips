@@ -46,6 +46,9 @@
         distribution.
 #*/
 #include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <dirent.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -55,6 +58,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define ATOMMC_DEBUG
 
 /* control pins */
 #define ATOMMC_RW    (1ULL<<24)      /* RW pin is on same location as M6502 RW pin */
@@ -153,7 +158,6 @@ extern "C" {
 #define ATOMMC_CT_BLOCK 0x08            /* Block addressing */
 
 
-
 typedef enum {
 	FR_OK = 0,			/* 0 */
 	FR_DISK_ERR,		/* 1 */
@@ -183,6 +187,10 @@ typedef struct {
     void* user_data;
 } atommc_desc_t;
 
+#define MAX_FILENAME  20
+#define MAX_FILEPATH 100
+#define MAX_DIRSIZE  100
+
 /* atommc state */
 typedef struct {
    uint8_t cmd;
@@ -196,8 +204,12 @@ typedef struct {
    uint8_t global_data[0x100];
    uint8_t global_index;
    FILE *fd;
-   DIR *dir;
-   char cwd[100];
+   char cwd[MAX_FILEPATH];
+   // State about the currently loaded directory
+   int dir_size;
+   int dir_index;
+   char *dirsorted[MAX_DIRSIZE];
+   char dirlist[MAX_DIRSIZE][MAX_FILENAME];
    atommc_in_t in_cb;
    atommc_out_t out_cb;
    void* user_data;
@@ -243,10 +255,12 @@ void atommc_init(atommc_t* atommc, const atommc_desc_t* desc) {
    atommc->user_data = desc->user_data;
    atommc_reset(atommc);
    atommc->cfg_byte = 0xE0;
-   // TODO - fixme
-   printf("%s\n", getcwd(NULL, 0));
-   printf("chdir = %d\n", chdir("mmc"));
-   printf("%s\n", getcwd(NULL, 0));
+   // All the files are packaged in a subdirectory called mmc
+   if (chdir("mmc")) {
+#ifdef ATOMMC_DEBUG
+      printf("failed to change to mmc subdirectory\n");
+#endif
+   }
 }
 
 void atommc_reset(atommc_t* atommc) {
@@ -259,12 +273,22 @@ char *getfilename(atommc_t* atommc) {
    static char buffer[1000];
    if (atommc->global_data[0]) {
       sprintf(buffer, "%s/%s", atommc->cwd, (char *)atommc->global_data);
+#ifdef ATOMMC_DEBUG
       printf("%s\n", buffer);
+#endif
       return buffer;
    } else {
       return 0;
    }
 }
+
+static int cmpstringp(const void *p1, const void *p2) {
+   /* The actual arguments to this function are "pointers to
+      pointers to char", but strcmp(3) arguments are "pointers
+      to char", hence the following cast plus dereference */
+   return strcmp(* (char * const *) p1, * (char * const *) p2);
+}
+
 
 static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
@@ -280,42 +304,63 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
       // Assume all commands are slow commands
       atommc->response = ATOMMC_STATUS_BUSY;
 
+#ifdef ATOMMC_DEBUG
       printf("atommc: cmd=%02x\n", atommc->cmd);
+#endif
 
       switch (atommc->cmd) {
 
       case ATOMMC_CMD_DIR_OPEN:
-         atommc->dir = opendir(atommc->cwd);
-         if (atommc->dir) {
-            atommc->response = ATOMMC_STATUS_OK;
-         } else {
-            atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
+         {
+            // Cache the directory entries, in sorted order
+            DIR *dir = opendir(atommc->cwd);
+            if (dir) {
+               struct dirent *entry;
+               int i = 0;
+               while (i < MAX_DIRSIZE && (entry = readdir(dir)) != NULL) {
+                  char *ptr = atommc->dirlist[i];
+                  if (entry->d_type == DT_DIR) {
+                     *ptr++ = '<';
+                  }
+                  strcpy(ptr, entry->d_name);
+                  ptr = ptr + strlen(entry->d_name);
+                  if (entry->d_type == DT_DIR) {
+                     *ptr++ = '>';
+                     *ptr++ = 0;
+                  }
+#ifdef ATOMMC_DEBUG
+                  printf("dir:%s\n", atommc->dirlist[i]);
+#endif
+                  atommc->dirsorted[i] = atommc->dirlist[i];
+                  i++;
+               }
+               closedir(dir);
+               qsort(atommc->dirsorted, i, sizeof(char *), cmpstringp);
+               atommc->dir_size = i;
+               atommc->dir_index = 0;
+               atommc->response = ATOMMC_STATUS_OK;
+            } else {
+               atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_PATH;
+            }
          }
          break;
 
       case ATOMMC_CMD_DIR_READ:
          {
-            struct dirent *dir;
-            atommc->global_data[0] = 0;
-            atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
-            if (atommc->dir) {
-               dir = readdir(atommc->dir);
-               if (dir) {
-                  char *ptr = (char *)atommc->global_data;
-                  if (dir->d_type == DT_DIR) {
-                     *ptr++ = '<';
-                  }
-                  strcpy(ptr, dir->d_name);
-                  ptr = ptr + strlen(dir->d_name);
-                  if (dir->d_type == DT_DIR) {
-                     *ptr++ = '>';
-                     *ptr++ = 0;
-                  }
-                  atommc->response = ATOMMC_STATUS_OK;
-               } else {
-                  closedir(atommc->dir);
-                  atommc->response = ATOMMC_STATUS_COMPLETE;
-               }
+            // Return the next name from the caches directory
+            if (atommc->dir_index < atommc->dir_size) {
+               memset(atommc->global_data, 0, 0x100);
+               char *name = atommc->dirsorted[atommc->dir_index];
+               strcpy((char *)atommc->global_data, name);
+               // TODO: Attribute Byte + Length should follow the name
+               atommc->dir_index++;
+               atommc->response = ATOMMC_STATUS_OK;
+#ifdef ATOMMC_DEBUG
+               printf("dir: %d %s\n", atommc->dir_index, name);
+#endif
+            } else {
+               atommc->global_data[0] = 0;
+               atommc->response = ATOMMC_STATUS_COMPLETE;
             }
          }
          break;
@@ -329,25 +374,37 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
             DIR *dir = opendir(dirname);
             if (dir) {
                strcpy(atommc->cwd, dirname);
-               closedir(atommc->dir);
+               closedir(dir);
                atommc->response = ATOMMC_STATUS_COMPLETE;
             } else {
-               atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
+               atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_PATH;
             }
          }
          break;
 
       case ATOMMC_CMD_DIR_GETCWD:
+         // This is never used by the AtoMMC filesystem ROM
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
          break;
 
       case ATOMMC_CMD_DIR_MKDIR:
+         if (mkdir(getfilename(atommc), 0x755)) {
+            atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+         } else {
+            atommc->response = ATOMMC_STATUS_COMPLETE;
+         }
          break;
 
       case ATOMMC_CMD_DIR_RMDIR:
+         if (rmdir(getfilename(atommc))) {
+            atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+         } else {
+            atommc->response = ATOMMC_STATUS_COMPLETE;
+         }
          break;
 
       case ATOMMC_CMD_FILE_CLOSE:
-         atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
          if (atommc->fd) {
             if (fclose(atommc->fd) == 0) {
                atommc->response = ATOMMC_STATUS_COMPLETE;
@@ -359,13 +416,10 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          atommc->fd = fopen(getfilename(atommc), "r");
          if (atommc->fd == 0) {
             // File doesn't exist, return an error
-            atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
+            atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_FILE;
          } else {
             atommc->response = ATOMMC_STATUS_COMPLETE;
          }
-         break;
-
-      case ATOMMC_CMD_FILE_OPEN_IMG:
          break;
 
       case ATOMMC_CMD_FILE_OPEN_WRITE:
@@ -375,26 +429,41 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
             // File doesn't exist, create it
             atommc->fd = fopen(getfilename(atommc), "w");
             if (atommc->fd == 0) {
-               atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
+               atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
             } else {
                atommc->response = ATOMMC_STATUS_COMPLETE;
             }
          } else {
             // File exists, give an error
             fclose(atommc->fd);
-            atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
+            atommc->response = ATOMMC_STATUS_COMPLETE | FR_EXIST;
          }
          break;
 
       case ATOMMC_CMD_FILE_DELETE:
-         if (remove((char *)atommc->global_data)) {
-            atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
+         if (remove(getfilename(atommc))) {
+            atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_PATH;
          } else {
             atommc->response = ATOMMC_STATUS_COMPLETE;
          }
          break;
 
       case ATOMMC_CMD_FILE_GETINFO:
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         if (atommc->fd) {
+            struct stat statbuf;
+            if (fstat(fileno(atommc->fd), &statbuf) == 0) {
+               // File size
+               *(uint32_t *)(atommc->global_data) = statbuf.st_size;
+               // Start Sector (TODO)
+               *(uint32_t *)(atommc->global_data + 4) = 0;
+               // Current random access file pointer (TODO)
+               *(uint32_t *)(atommc->global_data + 8) = 0;
+               // File attributes (TODO)
+               atommc->global_data[12] = 0;
+               atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+            }
+         }
          break;
 
       case ATOMMC_CMD_INIT_READ:
@@ -408,7 +477,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          break;
 
       case ATOMMC_CMD_READ_BYTES:
-         atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
          if (atommc->fd) {
             int len = atommc->latch;
             if (len == 0) {
@@ -421,7 +490,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          break;
 
       case ATOMMC_CMD_WRITE_BYTES:
-         atommc->response = ATOMMC_STATUS_COMPLETE | ATOMMC_ERROR_NO_DATA;
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
          if (atommc->fd) {
             int len = atommc->latch;
             if (len == 0) {
@@ -433,31 +502,24 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          }
          break;
 
+      // This is never used by the AtoMMC filesystem ROM
       case ATOMMC_CMD_EXEC_PACKET:
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
          break;
+
+      // SDDOS image commands
+      // This is never used by the AtoMMC filesystem ROM
 
       case ATOMMC_CMD_LOAD_PARAM:
-         break;
-
+      case ATOMMC_CMD_FILE_OPEN_IMG:
       case ATOMMC_CMD_GET_IMG_STATUS:
-         break;
-
       case ATOMMC_CMD_GET_IMG_NAME:
-         break;
-
       case ATOMMC_CMD_READ_IMG_SEC:
-         break;
-
       case ATOMMC_CMD_WRITE_IMG_SEC:
-         break;
-
       case ATOMMC_CMD_SER_IMG_INFO:
-         break;
-
       case ATOMMC_CMD_VALID_IMG_NAMES:
-         break;
-
       case ATOMMC_CMD_IMG_UNMOUNT:
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
          break;
 
       // Utility commands
@@ -516,13 +578,17 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
       break;
 
    case ATOMMC_LATCH_REG:
+#ifdef ATOMMC_DEBUG
       printf("atommc: latch=%02x\n", data);
+#endif
       atommc->latch = data;
       atommc->response = data;
       break;
 
    case ATOMMC_WRITE_DATA_REG:
+#ifdef ATOMMC_DEBUG
       printf("atommc: global=%02x\n", data);
+#endif
       atommc->global_data[atommc->global_index++] = data;
       break;
    }
