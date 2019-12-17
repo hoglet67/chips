@@ -59,7 +59,7 @@
 extern "C" {
 #endif
 
-#define ATOMMC_DEBUG
+// #define ATOMMC_DEBUG
 
 /* control pins */
 #define ATOMMC_RW    (1ULL<<24)      /* RW pin is on same location as M6502 RW pin */
