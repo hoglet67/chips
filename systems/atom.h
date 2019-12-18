@@ -141,7 +141,7 @@ typedef struct {
     int num_samples;
     int sample_pos;
     float sample_buffer[ATOM_MAX_AUDIO_SAMPLES];
-    uint8_t ram[0xA000];
+    uint8_t ram[0xB000];
     uint8_t rom_abasic[0x2000];
     uint8_t rom_afloat[0x1000];
     uint8_t rom_dosrom[0x1000];
@@ -745,8 +745,8 @@ static void _atom_init_memorymap(atom_t* sys) {
         sys->ram[i++] = (r>>16);
         sys->ram[i++] = (r>>24);
     }
-    /* 32 KB RAM (with RAM extension) + 8 KB vidmem */
-    mem_map_ram(&sys->mem, 0, 0x0000, 0xA000, sys->ram);
+    /* 32 KB RAM (with RAM extension) + 8 KB vidmem + 4K Utility ROM*/
+    mem_map_ram(&sys->mem, 0, 0x0000, 0xB000, sys->ram);
     /* hole in 0xA000 to 0xAFFF (for utility ROMs) */
     /* 0xB000 to 0xBFFF: IO area, not mapped */
     /* 16 KB ROMs from 0xC000 */
