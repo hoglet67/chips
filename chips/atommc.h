@@ -102,6 +102,8 @@ extern "C" {
 #define ATOMMC_CMD_FILE_OPEN_WRITE         (0x13)
 #define ATOMMC_CMD_FILE_DELETE             (0x14)
 #define ATOMMC_CMD_FILE_GETINFO            (0x15)
+#define ATOMMC_CMD_FILE_SEEK               (0x16)
+#define ATOMMC_CMD_FILE_OPEN_RAF           (0x17)
 
 #define ATOMMC_CMD_INIT_READ               (0x20)
 #define ATOMMC_CMD_INIT_WRITE              (0x21)
@@ -149,7 +151,10 @@ extern "C" {
 #define ATOMMC_ERROR_INVALID_DRIVE         (0x09)
 #define ATOMMC_ERROR_READ_ONLY             (0x0A)
 #define ATOMMC_ERROR_ALREADY_MOUNT         (0x0A)
+#define ERROR_TOO_MANY_OPEN                (0x12)
 
+// Offset returned file numbers by 0x20, to disambiguate from errors
+#define FILENUM_OFFSET		               (0x20)
 
 #define ATOMMC_CT_MMC   0x01            /* MMC ver 3 */
 #define ATOMMC_CT_SD1   0x02            /* SD ver 1 */
@@ -159,22 +164,22 @@ extern "C" {
 
 
 typedef enum {
-	FR_OK = 0,			/* 0 */
-	FR_DISK_ERR,		/* 1 */
-	FR_INT_ERR,			/* 2 */
-	FR_NOT_READY,		/* 3 */
-	FR_NO_FILE,			/* 4 */
-	FR_NO_PATH,			/* 5 */
-	FR_INVALID_NAME,	/* 6 */
-	FR_DENIED,			/* 7 */
-	FR_EXIST,			/* 8 */
-	FR_INVALID_OBJECT,	/* 9 */
-	FR_WRITE_PROTECTED,	/* 10 */
-	FR_INVALID_DRIVE,	/* 11 */
-	FR_NOT_ENABLED,		/* 12 */
-	FR_NO_FILESYSTEM,	/* 13 */
-	FR_MKFS_ABORTED,	/* 14 */
-	FR_TIMEOUT			/* 15 */
+    FR_OK = 0,          /* 0 */
+    FR_DISK_ERR,        /* 1 */
+    FR_INT_ERR,         /* 2 */
+    FR_NOT_READY,       /* 3 */
+    FR_NO_FILE,         /* 4 */
+    FR_NO_PATH,         /* 5 */
+    FR_INVALID_NAME,    /* 6 */
+    FR_DENIED,          /* 7 */
+    FR_EXIST,           /* 8 */
+    FR_INVALID_OBJECT,  /* 9 */
+    FR_WRITE_PROTECTED, /* 10 */
+    FR_INVALID_DRIVE,   /* 11 */
+    FR_NOT_ENABLED,     /* 12 */
+    FR_NO_FILESYSTEM,   /* 13 */
+    FR_MKFS_ABORTED,    /* 14 */
+    FR_TIMEOUT          /* 15 */
 } FRESULT;
 
 typedef uint8_t (*atommc_in_t)(int port_id, void* user_data);
@@ -190,6 +195,7 @@ typedef struct {
 #define MAX_FILENAME  20
 #define MAX_FILEPATH 100
 #define MAX_DIRSIZE  100
+#define MAX_FD         4
 
 /* atommc state */
 typedef struct {
@@ -203,7 +209,7 @@ typedef struct {
    uint8_t port_data;
    uint8_t global_data[0x100];
    uint8_t global_index;
-   FILE *fd;
+   FILE *fd[MAX_FD];
    char cwd[MAX_FILEPATH];
    // State about the currently loaded directory
    int dir_size;
@@ -289,8 +295,26 @@ static int cmpstringp(const void *p1, const void *p2) {
    return strcmp(* (char * const *) p1, * (char * const *) p2);
 }
 
+static int findFile(atommc_t* atommc, int filenum) {
+   if (filenum > 0) {
+      filenum = -1;
+      if (!atommc->fd[1]) {
+         filenum = 1;
+      } else if (!atommc->fd[2]) {
+         filenum = 2;
+      } else if (!atommc->fd[3]) {
+         filenum = 3;
+      }
+   }
+   if (filenum == -1) {
+      atommc->response = ATOMMC_STATUS_COMPLETE | ERROR_TOO_MANY_OPEN;
+   }
+   return filenum;
+}
 
 static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
+   int filenum = 0;
+   FILE **fdp;
 
    // Latch the address only on writes
    atommc->address = addr & 3;
@@ -298,6 +322,28 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
    switch (addr & 3) {
 
    case ATOMMC_CMD_REG:
+
+      // Deal with random access files
+
+      // File Group 0x10-0x17, 0x30-0x37, 0x50-0x57, 0x70-0x77
+      // filenum = bits 6,5
+      // mask1 = 10011000 (test for file group command)
+      // mask2 = 10011111 (remove file number)
+      if ((data & 0x98) == 0x10) {
+         filenum = (data >> 5) & 3;
+         data &= 0x9F;
+      }
+
+      // Data Group 0x20-0x23, 0x24-0x27, 0x28-0x2B, 0x2C-0x2F
+      // filenum = bits 3,2
+      // mask1 = 11110000 (test for data group command)
+      // mask2 = 11110011 (remove file number)
+      if ((data & 0xf0) == 0x20) {
+         filenum = (data >> 2) & 3;
+         data &= 0xF3;
+      }
+
+      fdp = &atommc->fd[filenum];
 
       atommc->cmd = data;
 
@@ -405,38 +451,76 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
       case ATOMMC_CMD_FILE_CLOSE:
          atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
-         if (atommc->fd) {
-            if (fclose(atommc->fd) == 0) {
+         if (*fdp) {
+            if (fclose(*fdp) == 0) {
+               atommc->response = ATOMMC_STATUS_COMPLETE;
+            }
+         }
+         *fdp = NULL;
+         break;
+
+      case ATOMMC_CMD_FILE_OPEN_READ:
+         // Search for a free file handle, or respond with Too Many Open Files
+         filenum = findFile(atommc, filenum);
+         if (filenum >= 0) {
+            fdp = &atommc->fd[filenum];
+            *fdp = fopen(getfilename(atommc), "r");
+            if (*fdp == 0) {
+               // File doesn't exist, return an error
+               atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_FILE;
+            } else if (filenum) {
+               atommc->response = ATOMMC_STATUS_COMPLETE | FILENUM_OFFSET | filenum;
+            } else {
                atommc->response = ATOMMC_STATUS_COMPLETE;
             }
          }
          break;
 
-      case ATOMMC_CMD_FILE_OPEN_READ:
-         atommc->fd = fopen(getfilename(atommc), "r");
-         if (atommc->fd == 0) {
-            // File doesn't exist, return an error
-            atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_FILE;
-         } else {
-            atommc->response = ATOMMC_STATUS_COMPLETE;
+      case ATOMMC_CMD_FILE_OPEN_RAF:
+         // Search for a free file handle, or respond with Too Many Open Files
+         filenum = findFile(atommc, filenum);
+         if (filenum >= 0) {
+            fdp = &atommc->fd[filenum];
+            // First check if the file already exists
+            *fdp = fopen(getfilename(atommc), "r+");
+            if (*fdp == 0) {
+               // File doesn't exist, create it
+               *fdp = fopen(getfilename(atommc), "w+");
+            }
+            if (*fdp == 0) {
+               // File doesn't exist, return an error
+               atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+            } else if (filenum) {
+               atommc->response = ATOMMC_STATUS_COMPLETE | FILENUM_OFFSET | filenum;
+            } else {
+               atommc->response = ATOMMC_STATUS_COMPLETE;
+            }
          }
          break;
 
       case ATOMMC_CMD_FILE_OPEN_WRITE:
-         // First check if the file already exists
-         atommc->fd = fopen(getfilename(atommc), "r");
-         if (atommc->fd == 0) {
-            // File doesn't exist, create it
-            atommc->fd = fopen(getfilename(atommc), "w");
-            if (atommc->fd == 0) {
-               atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         // Search for a free file handle, or respond with Too Many Open Files
+         filenum = findFile(atommc, filenum);
+         if (filenum >= 0) {
+            fdp = &atommc->fd[filenum];
+            // First check if the file already exists
+            *fdp = fopen(getfilename(atommc), "r");
+            if (*fdp == 0) {
+               // File doesn't exist, create it
+               *fdp = fopen(getfilename(atommc), "w");
+               if (*fdp == 0) {
+                  atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+               } else if (filenum) {
+                  atommc->response = ATOMMC_STATUS_COMPLETE | FILENUM_OFFSET | filenum;
+               } else {
+                  atommc->response = ATOMMC_STATUS_COMPLETE;
+               }
             } else {
-               atommc->response = ATOMMC_STATUS_COMPLETE;
+               // File exists, give an error
+               fclose(*fdp);
+               *fdp = NULL;
+               atommc->response = ATOMMC_STATUS_COMPLETE | FR_EXIST;
             }
-         } else {
-            // File exists, give an error
-            fclose(atommc->fd);
-            atommc->response = ATOMMC_STATUS_COMPLETE | FR_EXIST;
          }
          break;
 
@@ -450,19 +534,28 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
       case ATOMMC_CMD_FILE_GETINFO:
          atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
-         if (atommc->fd) {
+         if (*fdp) {
             struct stat statbuf;
-            if (fstat(fileno(atommc->fd), &statbuf) == 0) {
+            if (fstat(fileno(*fdp), &statbuf) == 0) {
                // File size
                *(uint32_t *)(atommc->global_data) = statbuf.st_size;
                // Start Sector (TODO)
                *(uint32_t *)(atommc->global_data + 4) = 0;
-               // Current random access file pointer (TODO)
-               *(uint32_t *)(atommc->global_data + 8) = 0;
+               // Current random access file pointer
+               *(uint32_t *)(atommc->global_data + 8) = ftell(*fdp);
                // File attributes (TODO)
                atommc->global_data[12] = 0;
                atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
             }
+         }
+         break;
+
+      case ATOMMC_CMD_FILE_SEEK:
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         if (*fdp) {
+            int offset = *(uint32_t *)(&atommc->global_data[0]);
+            fseek(*fdp, offset, SEEK_SET);
+            atommc->response = ATOMMC_STATUS_COMPLETE;
          }
          break;
 
@@ -478,12 +571,12 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
       case ATOMMC_CMD_READ_BYTES:
          atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
-         if (atommc->fd) {
+         if (*fdp) {
             int len = atommc->latch;
             if (len == 0) {
                len = 256;
             }
-            if (fread(atommc->global_data, len, 1, atommc->fd) == 1) {
+            if (fread(atommc->global_data, len, 1, *fdp) == 1) {
                atommc->response = ATOMMC_STATUS_COMPLETE;
             }
          }
@@ -491,12 +584,12 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
       case ATOMMC_CMD_WRITE_BYTES:
          atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
-         if (atommc->fd) {
+         if (*fdp) {
             int len = atommc->latch;
             if (len == 0) {
                len = 256;
             }
-            if (fwrite(atommc->global_data, len, 1, atommc->fd) == 1) {
+            if (fwrite(atommc->global_data, len, 1, *fdp) == 1) {
                atommc->response = ATOMMC_STATUS_COMPLETE;
             }
          }
@@ -598,6 +691,10 @@ static uint8_t _atommc_read(atommc_t* atommc, uint8_t addr) {
    uint8_t data = atommc->response;
    if (atommc->address == ATOMMC_READ_DATA_REG) {
       atommc->response = atommc->global_data[atommc->global_index++];
+   } else {
+#ifdef ATOMMC_DEBUG
+      printf("atommc: resp=%02x\n", data);
+#endif
    }
    return data;
 }
