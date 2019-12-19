@@ -75,6 +75,12 @@ typedef enum {
     ATOM_JOYSTICKTYPE_MMC
 } atom_joystick_type_t;
 
+/* sid emulation types */
+typedef enum {
+    ATOM_SIDTYPE_NONE,
+    ATOM_SIDTYPE_M6581
+} atom_sid_type_t;
+
 /* joystick mask bits */
 #define ATOM_JOYSTICK_RIGHT (1<<0)
 #define ATOM_JOYSTICK_LEFT  (1<<1)
@@ -119,6 +125,7 @@ typedef struct {
     i8255_t ppi;
     m6522_t via;
     atommc_t atommc;
+    m6581_t sid;
     beeper_t beeper;
     bool valid;
     int counter_2_4khz;
@@ -130,6 +137,7 @@ typedef struct {
     bool ctrl;
     bool rept;
     atom_joystick_type_t joystick_type;
+    atom_sid_type_t sid_type;
     uint8_t kbd_joymask;        /* joystick mask from keyboard-joystick-emulation */
     uint8_t joy_joymask;        /* joystick mask from calls to atom_joystick() */
     uint8_t mmc_cmd;
@@ -222,6 +230,7 @@ void atom_init(atom_t* sys, const atom_desc_t* desc) {
     memset(sys, 0, sizeof(atom_t));
     sys->valid = true;
     sys->joystick_type = desc->joystick_type;
+    sys->sid_type = ATOM_SIDTYPE_NONE;
     sys->user_data = desc->user_data;
     sys->audio_cb = desc->audio_cb;
     sys->num_samples = _ATOM_DEFAULT(desc->audio_num_samples, ATOM_DEFAULT_AUDIO_SAMPLES);
@@ -274,6 +283,13 @@ void atom_init(atom_t* sys, const atom_desc_t* desc) {
     const float audio_vol = _ATOM_DEFAULT(desc->audio_volume, 0.5f);
     beeper_init(&sys->beeper, ATOM_FREQUENCY, audio_hz, audio_vol);
 
+    m6581_desc_t sid_desc;
+    _ATOM_CLEAR(sid_desc);
+    sid_desc.tick_hz = 1000000;
+    sid_desc.sound_hz = audio_hz;
+    sid_desc.magnitude = 1.0;
+    m6581_init(&sys->sid, &sid_desc);
+
     /* setup memory map and keyboard matrix */
     _atom_init_memorymap(sys);
     _atom_init_keymap(sys);
@@ -314,6 +330,7 @@ void atom_reset(atom_t* sys) {
     atommc_reset(&sys->atommc);
     mc6847_reset(&sys->vdg);
     beeper_reset(&sys->beeper);
+    m6581_reset(&sys->sid);
     sys->state_2_4khz = false;
     sys->out_cass0 = false;
     sys->out_cass1 = false;
@@ -419,6 +436,7 @@ void atom_joystick(atom_t* sys, uint8_t mask) {
 
 /* CPU tick callback */
 uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
+    bool sample = false;
 
     /* tick the CPU */
     if (!sys->in_reset) {
@@ -443,8 +461,20 @@ uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
 
     /* update beeper */
     if (beeper_tick(&sys->beeper)) {
+       sample = true;
+    }
+
+    if (sys->sid_type == ATOM_SIDTYPE_M6581) {
+       if (m6581_tick(&sys->sid)) {
+          sample = true;
+       }
+    }
+
+    if (sample) {
         /* new audio sample ready */
-        sys->sample_buffer[sys->sample_pos++] = sys->beeper.sample;
+        float sample = sys->sid.sample;
+        sample += sys->beeper.sample;
+        sys->sample_buffer[sys->sample_pos++] = sample;
         if (sys->sample_pos == sys->num_samples) {
             if (sys->audio_cb) {
                 sys->audio_cb(sys->sample_buffer, sys->num_samples, sys->user_data);
@@ -479,6 +509,12 @@ uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
             /* NOTE: M6522_RW pin is identical with M6502_RW) */
             pins = m6522_iorq(&sys->via, via_pins) & M6502_PIN_MASK;
         }
+        else if ((addr >= 0xBDC0) && (addr < 0xBDE0)) {
+            /* SID (BDC..BDDF) */
+            uint64_t sid_pins = (pins & M6502_PIN_MASK)|M6581_CS;
+            pins = m6581_iorq(&sys->sid, sid_pins) & M6502_PIN_MASK;
+        }
+
         else {
             /* remaining IO space is for expansion devices */
             if (pins & M6502_RW) {

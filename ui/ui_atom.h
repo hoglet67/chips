@@ -8,11 +8,11 @@
     ~~~C
     #define CHIPS_IMPL
     ~~~
-    before you include this file in *one* C++ file to create the 
+    before you include this file in *one* C++ file to create the
     implementation.
 
     Optionally provide the following macros with your own implementation
-    
+
     ~~~C
     CHIPS_ASSERT(c)
     ~~~
@@ -52,7 +52,7 @@
         2. Altered source versions must be plainly marked as such, and must not
         be misrepresented as being the original software.
         3. This notice may not be removed or altered from any source
-        distribution. 
+        distribution.
 #*/
 #include <stdint.h>
 #include <stdbool.h>
@@ -130,6 +130,15 @@ static void _ui_atom_draw_menu(ui_atom_t* ui, double time_ms) {
                 }
                 if (ImGui::MenuItem("MMC", 0, (ui->atom->joystick_type == ATOM_JOYSTICKTYPE_MMC))) {
                     ui->atom->joystick_type = ATOM_JOYSTICKTYPE_MMC;
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("SID")) {
+                if (ImGui::MenuItem("None", 0, (ui->atom->sid_type == ATOM_SIDTYPE_NONE))) {
+                    ui->atom->sid_type = ATOM_SIDTYPE_NONE;
+                }
+                if (ImGui::MenuItem("m6581", 0, (ui->atom->sid_type == ATOM_SIDTYPE_M6581))) {
+                    ui->atom->sid_type = ATOM_SIDTYPE_M6581;
                 }
                 ImGui::EndMenu();
             }
