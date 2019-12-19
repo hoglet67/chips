@@ -332,8 +332,13 @@ void atom_exec(atom_t* sys, uint32_t micro_seconds) {
     kbd_update(&sys->kbd);
 }
 
-void handle_shift_ctrl_rept(atom_t* sys, int key_code, bool val) {
+int handle_shift_ctrl_rept_break(atom_t* sys, int key_code, bool val) {
    switch (key_code) {
+   case SAPP_KEYCODE_F10:
+   case SAPP_KEYCODE_F12:
+      sys->in_reset = val;
+      atom_reset(sys);
+      break;
    case SAPP_KEYCODE_LEFT_SHIFT:
    case SAPP_KEYCODE_RIGHT_SHIFT:
       sys->shift = val;
@@ -348,21 +353,15 @@ void handle_shift_ctrl_rept(atom_t* sys, int key_code, bool val) {
       sys->rept = val;
       break;
    }
+   // Remap key codes, as key matrix has maximum of 256 keys
+   return key_code >= 256 ? key_code - 128 : key_code;
 }
 
 void atom_key_down(atom_t* sys, int key_code) {
     CHIPS_ASSERT(sys && sys->valid);
-    // Handle shift/ctrl/rept
-    handle_shift_ctrl_rept(sys, key_code, true);
-    // Handle break key
-    if (key_code == SAPP_KEYCODE_F10) {
-       sys->in_reset = true;
-       atom_reset(sys);
-    }
-    // Remap key codes, as key matrix has maximum of 256 keys
-    if (key_code >= 256) {
-       key_code -= 128;
-    }
+    // Handle shift/ctrl/rept/break, remap higher key codes
+    key_code = handle_shift_ctrl_rept_break(sys, key_code, true);
+    // TODO: fix atommc joystick support
     switch (sys->joystick_type) {
         case ATOM_JOYSTICKTYPE_NONE:
             kbd_key_down(&sys->kbd, key_code);
@@ -382,18 +381,9 @@ void atom_key_down(atom_t* sys, int key_code) {
 
 void atom_key_up(atom_t* sys, int key_code) {
     CHIPS_ASSERT(sys && sys->valid);
-    // Handle shift/ctrl/rept
-    // Handle shift/ctrl/rept
-    handle_shift_ctrl_rept(sys, key_code, false);
-    // Handle break key
-    if (key_code == SAPP_KEYCODE_F10) {
-       sys->in_reset = false;
-       atom_reset(sys);
-    }
-    // Remap key codes, as key matrix has maximum of 256 keys
-    if (key_code >= 256) {
-       key_code -= 128;
-    }
+    // Handle shift/ctrl/rept/break, remap higher key codes
+    key_code = handle_shift_ctrl_rept_break(sys, key_code, false);
+    // TODO: fix atommc joystick support
     switch (sys->joystick_type) {
         case ATOM_JOYSTICKTYPE_NONE:
             kbd_key_up(&sys->kbd, key_code);
