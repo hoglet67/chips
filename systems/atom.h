@@ -88,8 +88,6 @@ typedef enum {
 #define ATOM_JOYSTICK_UP    (1<<3)
 #define ATOM_JOYSTICK_BTN   (1<<4)
 
-#define KEYCODE_SUPPRESS     0xFF
-
 /* audio sample data callback */
 typedef void (*atom_audio_callback_t)(const float* samples, int num_samples, void* user_data);
 
@@ -352,8 +350,6 @@ void atom_exec(atom_t* sys, uint32_t micro_seconds) {
 }
 
 int handle_shift_ctrl_rept_break(atom_t* sys, int key_code, bool val) {
-
-   // Handle special keys, like shift, control, repeat and break
    switch (key_code) {
    case SAPP_KEYCODE_F10:
    case SAPP_KEYCODE_F12:
@@ -374,76 +370,51 @@ int handle_shift_ctrl_rept_break(atom_t* sys, int key_code, bool val) {
       sys->rept = val;
       break;
    }
-
    // Remap key codes, as key matrix has maximum of 256 keys
-   int remapped_key_code = key_code >= 256 ? key_code - 128 : key_code;
-
-   // Handle AtoMMC Joystick
-   int return_key_code;
-   if (sys->joystick_type == ATOM_JOYSTICKTYPE_MMC) {
-      return_key_code = KEYCODE_SUPPRESS;
-      switch (key_code) {
-      case SAPP_KEYCODE_SPACE:
-         if (val) {
-            sys->kbd_joymask |= ATOM_JOYSTICK_BTN;
-         } else {
-            sys->kbd_joymask &= ~ATOM_JOYSTICK_BTN;
-         }
-         break;
-      case SAPP_KEYCODE_LEFT:
-         if (val) {
-            sys->kbd_joymask |= ATOM_JOYSTICK_LEFT;
-         } else {
-            sys->kbd_joymask &= ~ATOM_JOYSTICK_LEFT;
-         }
-         break;
-      case SAPP_KEYCODE_RIGHT:
-         if (val) {
-            sys->kbd_joymask |= ATOM_JOYSTICK_RIGHT;
-         } else {
-            sys->kbd_joymask &= ~ATOM_JOYSTICK_RIGHT;
-         }
-         break;
-      case SAPP_KEYCODE_DOWN:
-         if (val) {
-            sys->kbd_joymask |= ATOM_JOYSTICK_DOWN;
-         } else {
-            sys->kbd_joymask &= ~ATOM_JOYSTICK_DOWN;
-         }
-         break;
-      case SAPP_KEYCODE_UP:
-         if (val) {
-            sys->kbd_joymask |= ATOM_JOYSTICK_UP;
-         } else {
-            sys->kbd_joymask &= ~ATOM_JOYSTICK_UP;
-         }
-         break;
-      default:
-         return_key_code = remapped_key_code;
-      }
-   } else {
-      return_key_code = remapped_key_code;
-   }
-   return return_key_code;
+   return key_code >= 256 ? key_code - 128 : key_code;
 }
 
 void atom_key_down(atom_t* sys, int key_code) {
     CHIPS_ASSERT(sys && sys->valid);
-    // Handle shift/ctrl/rept/break, remap higher key codes, handle joystick
+    // Handle shift/ctrl/rept/break, remap higher key codes
     key_code = handle_shift_ctrl_rept_break(sys, key_code, true);
-    // Pass on to keyboard matrix
-    if (key_code != KEYCODE_SUPPRESS) {
-       kbd_key_down(&sys->kbd, key_code);
+    // TODO: fix atommc joystick support
+    switch (sys->joystick_type) {
+        case ATOM_JOYSTICKTYPE_NONE:
+            kbd_key_down(&sys->kbd, key_code);
+            break;
+        case ATOM_JOYSTICKTYPE_MMC:
+            switch (key_code) {
+                case 0x20:  sys->kbd_joymask |= ATOM_JOYSTICK_BTN; break;
+                case 0x08:  sys->kbd_joymask |= ATOM_JOYSTICK_LEFT; break;
+                case 0x09:  sys->kbd_joymask |= ATOM_JOYSTICK_RIGHT; break;
+                case 0x0A:  sys->kbd_joymask |= ATOM_JOYSTICK_DOWN; break;
+                case 0x0B:  sys->kbd_joymask |= ATOM_JOYSTICK_UP; break;
+                default:    kbd_key_down(&sys->kbd, key_code); break;
+            }
+            break;
     }
 }
 
 void atom_key_up(atom_t* sys, int key_code) {
     CHIPS_ASSERT(sys && sys->valid);
-    // Handle shift/ctrl/rept/break, remap higher key codes, handle joystick
+    // Handle shift/ctrl/rept/break, remap higher key codes
     key_code = handle_shift_ctrl_rept_break(sys, key_code, false);
-    // Pass on to keyboard matrix
-    if (key_code != KEYCODE_SUPPRESS) {
-       kbd_key_up(&sys->kbd, key_code);
+    // TODO: fix atommc joystick support
+    switch (sys->joystick_type) {
+        case ATOM_JOYSTICKTYPE_NONE:
+            kbd_key_up(&sys->kbd, key_code);
+            break;
+        case ATOM_JOYSTICKTYPE_MMC:
+            switch (key_code) {
+                case 0x20:  sys->kbd_joymask &= ~ATOM_JOYSTICK_BTN; break;
+                case 0x08:  sys->kbd_joymask &= ~ATOM_JOYSTICK_LEFT; break;
+                case 0x09:  sys->kbd_joymask &= ~ATOM_JOYSTICK_RIGHT; break;
+                case 0x0A:  sys->kbd_joymask &= ~ATOM_JOYSTICK_DOWN; break;
+                case 0x0B:  sys->kbd_joymask &= ~ATOM_JOYSTICK_UP; break;
+                default:    kbd_key_up(&sys->kbd, key_code); break;
+            }
+            break;
     }
 }
 
@@ -526,9 +497,6 @@ uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
             pins = i8255_iorq(&sys->ppi, ppi_pins) & M6502_PIN_MASK;
         }
         else if ((addr >= 0xB400) && (addr < 0xB800)) {
-
-            /* FixMe: should do this with pins! */
-            sys->atommc.port_data = ~(sys->kbd_joymask | sys->joy_joymask);
 
             uint64_t atommc_pins = (pins & M6502_PIN_MASK)|ATOMMC_CS;
             /* NOTE: ATOMMC_RW pin is identical with M6502_RW) */
