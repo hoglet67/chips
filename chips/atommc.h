@@ -2,7 +2,7 @@
 /*#
     # atommc
 
-    Header-only AtoMMC emulator written in C.
+    Header-only AtoMMC File System emulator written in C.
 
     Do this:
     ~~~C
@@ -23,13 +23,14 @@
 
     ## NOT EMULATED
 
-    Currently this just contains the minimal required functionality to make
-    some games on the Acorn Atom work (basically just timers, and even those
-    or likely not correct).
+    - This is a functional emulation only, i.e. commands execute instantaneously
+    - The SDDOS disk images commands are currently not implemented
 
     ## zlib/libpng license
 
+    Copyright (c) 2019 David Banks (hoglet)
     Copyright (c) 2018 Andre Weissflog
+
     This software is provided 'as-is', without any express or implied warranty.
     In no event will the authors be held liable for any damages arising from the
     use of this software.
@@ -61,18 +62,18 @@ extern "C" {
 
 // #define ATOMMC_DEBUG
 
-/* control pins */
+/* Control pins */
 #define ATOMMC_RW    (1ULL<<24)      /* RW pin is on same location as M6502 RW pin */
 #define ATOMMC_CS    (1ULL<<40)      /* chip-select, active high */
 
-/* register select same as lower 4 shared address bus bits */
+/* Register select same as lower 4 shared address bus bits */
 #define ATOMMC_A0   (1ULL<<0)
 #define ATOMMC_A1   (1ULL<<1)
 #define ATOMMC_A2   (1ULL<<2)
 #define ATOMMC_A3   (1ULL<<3)
 #define ATOMMC_A    (ATOMMC_A0|ATOMMC_A1|ATOMMC_A2|ATOMMC_A3)
 
-/* data bus pins shared with CPU */
+/* Data bus pins shared with CPU */
 #define ATOMMC_D0    (1ULL<<16)
 #define ATOMMC_D1    (1ULL<<17)
 #define ATOMMC_D2    (1ULL<<18)
@@ -82,12 +83,13 @@ extern "C" {
 #define ATOMMC_D6    (1ULL<<22)
 #define ATOMMC_D7    (1ULL<<23)
 
+/* AtoMMC Registers */
 #define ATOMMC_CMD_REG                     (0)
 #define ATOMMC_LATCH_REG                   (1)
 #define ATOMMC_READ_DATA_REG               (2)
 #define ATOMMC_WRITE_DATA_REG              (3)
 
-// DIR_CMD_REG commands
+/* AtoMMC Directory Commands */
 #define ATOMMC_CMD_DIR_OPEN                (0x00)
 #define ATOMMC_CMD_DIR_READ                (0x01)
 #define ATOMMC_CMD_DIR_CWD                 (0x02)
@@ -95,7 +97,7 @@ extern "C" {
 #define ATOMMC_CMD_DIR_MKDIR               (0x04)
 #define ATOMMC_CMD_DIR_RMDIR               (0x05)
 
-// CMD_REG_COMMANDS
+/* AtoMMC File Commands */
 #define ATOMMC_CMD_FILE_CLOSE              (0x10)
 #define ATOMMC_CMD_FILE_OPEN_READ          (0x11)
 #define ATOMMC_CMD_FILE_OPEN_IMG           (0x12)
@@ -105,17 +107,16 @@ extern "C" {
 #define ATOMMC_CMD_FILE_SEEK               (0x16)
 #define ATOMMC_CMD_FILE_OPEN_RAF           (0x17)
 
+/* AtoMMC Data Transfer Commands */
 #define ATOMMC_CMD_INIT_READ               (0x20)
 #define ATOMMC_CMD_INIT_WRITE              (0x21)
 #define ATOMMC_CMD_READ_BYTES              (0x22)
 #define ATOMMC_CMD_WRITE_BYTES             (0x23)
 
-// READ_DATA_REG "commands"
-
-// EXEC_PACKET_REG "commands"
+/* AtoMMC Execute Arbitrary Command */
 #define ATOMMC_CMD_EXEC_PACKET             (0x3F)
 
-// SDOS_LBA_REG commands
+/* SDDOS disk image Commands */
 #define ATOMMC_CMD_LOAD_PARAM              (0x40)
 #define ATOMMC_CMD_GET_IMG_STATUS          (0x41)
 #define ATOMMC_CMD_GET_IMG_NAME            (0x42)
@@ -125,7 +126,7 @@ extern "C" {
 #define ATOMMC_CMD_VALID_IMG_NAMES         (0x46)
 #define ATOMMC_CMD_IMG_UNMOUNT             (0x47)
 
-// Utility commands
+/* Utility Commands */
 #define ATOMMC_CMD_GET_CARD_TYPE           (0x80)
 #define ATOMMC_CMD_GET_PORT_DDR            (0xA0)
 #define ATOMMC_CMD_SET_PORT_DDR            (0xA1)
@@ -138,14 +139,13 @@ extern "C" {
 #define ATOMMC_CMD_READ_AUX                (0xFD)
 #define ATOMMC_CMD_GET_HEARTBEAT           (0xFE)
 
-
-// Status codes
+/* Status Codes */
 #define ATOMMC_STATUS_OK                   (0x3F)
 #define ATOMMC_STATUS_COMPLETE             (0x40)
 #define ATOMMC_STATUS_EOF                  (0x60)
 #define ATOMMC_STATUS_BUSY                 (0x80)
 
-// Error Codes
+/* Error Codes */
 #define ATOMMC_ERROR_INT_ERR               (0x42)
 #define ATOMMC_ERROR_NO_FILE               (0x44)
 #define ATOMMC_ERROR_NO_PATH               (0x45)
@@ -153,34 +153,48 @@ extern "C" {
 #define ATOMMC_ERROR_EXIST                 (0x48)
 #define ATOMMC_ERROR_TOO_MANY_OPEN         (0x52)
 
-// Offset returned file numbers by 0x20, to disambiguate from errors
+/* Offset returned file numbers by 0x20, to disambiguate from errors */
 #define FILENUM_OFFSET                     (0x20)
 
-// SD Card Types
-#define ATOMMC_CT_MMC   0x01            /* MMC ver 3 */
-#define ATOMMC_CT_SD1   0x02            /* SD ver 1 */
-#define ATOMMC_CT_SD2   0x04            /* SD ver 2 */
-#define ATOMMC_CT_SDC   (CT_SD1|CT_SD2) /* SD */
-#define ATOMMC_CT_BLOCK 0x08            /* Block addressing */
+/* SD Card Types */
+#define ATOMMC_CT_MMC                      (0x01) /* MMC ver 3 */
+#define ATOMMC_CT_SD1                      (0x02) /* SD ver 1 */
+#define ATOMMC_CT_SD2                      (0x04) /* SD ver 2 */
+#define ATOMMC_CT_SDC             (CT_SD1|CT_SD2) /* SD */
+#define ATOMMC_CT_BLOCK                    (0x08) /* Block addressing */
 
-typedef uint8_t (*atommc_in_t)(int port_id, void* user_data);
+#define ATOMMC_CT_DEFAULT          ATOMMC_CT_SD1
+
+   typedef uint8_t (*atommc_in_t)(int port_id, void* user_data);
+
 typedef void (*atommc_out_t)(int port_id, uint8_t data, void* user_data);
 
-/* atommc initialization parameters */
+/* AtoMMC initialization parameters */
 typedef struct {
     atommc_in_t in_cb;
     atommc_out_t out_cb;
     void* user_data;
 } atommc_desc_t;
 
-#define MAX_FILENAME  20
-#define MAX_FILEPATH 100
-#define MAX_DIRSIZE  100
-#define MAX_FD         4
+/* Limits on file/directory lengths */
+#define MAX_FILENAME                         (20)
+#define MAX_FILEPATH                        (200)
+#define MAX_DIRSIZE                         (100)
+#define MAX_FD                                (4)
+#define MAX_GLOBAL                        (0x100)
+#define WILD_LEN                             (16)
+
 
 /* AtoMMC File Attributes */
 #define ATOMMC_ATTR_HIDDEN                 (0x02)
 #define ATOMMC_ATTR_DIR                    (0x10)
+
+// AtoMMC supports three types of file open
+enum {
+   ATOMMC_MODE_READ,
+   ATOMMC_MODE_WRITE,
+   ATOMMC_MODE_RAF
+};
 
 /* AtoMMC Directory Entry */
 typedef struct {
@@ -189,25 +203,36 @@ typedef struct {
    uint32_t len;
 } atommc_dirent_t;
 
-/* atommc state */
+/* AtoMMC state */
 typedef struct {
-   uint8_t cmd;
+   /* Command parameter latch */
    uint8_t latch;
+   /* Last write address */
    uint8_t address;
+   /* Heartbeat state */
    uint8_t heartbeat;
+   /* Command response */
    uint8_t response;
+   /* Config Byte (Shift-break behaviour) */
    uint8_t cfg_byte;
+   /* 8-bit I/O Port */
    uint8_t port_tris;
    uint8_t port_data;
-   uint8_t global_data[0x100];
+   /* Global Data */
+   uint8_t global_data[MAX_GLOBAL];
    uint8_t global_index;
+   /* Pool of file descriptors */
    FILE *fd[MAX_FD];
+   /* Relative pah of current working directory */
    char cwd[MAX_FILEPATH];
-   // State about the currently loaded directory
+   /* Currently loaded directory */
    int dir_size;
    int dir_index;
    atommc_dirent_t *dirsorted[MAX_DIRSIZE];
    atommc_dirent_t dirlist[MAX_DIRSIZE];
+   /* Current wildcard */
+   char wildPattern[WILD_LEN + 1];
+   /* Standard emulator callbacks, etc */
    atommc_in_t in_cb;
    atommc_out_t out_cb;
    void* user_data;
@@ -216,10 +241,9 @@ typedef struct {
 
 /* extract 8-bit data bus from 64-bit pins */
 #define ATOMMC_GET_DATA(p) ((uint8_t)(p>>16))
+
 /* merge 8-bit data bus value into 64-bit pins */
 #define ATOMMC_SET_DATA(p,d) {p=((p&~0xFF0000)|(((d)&0xFF)<<16));}
-/* merge 4-bit address into 64-bit pins */
-#define ATOMMC_SET_ADDR(p,d) {p=((p&~0xF)|((d)&0xF));}
 
 /* initialize a new atommc instance */
 void atommc_init(atommc_t* atommc, const atommc_desc_t* desc);
@@ -275,8 +299,9 @@ void atommc_reset(atommc_t* atommc) {
    strcpy(atommc->cwd, ".");
 }
 
-char *getfilename(atommc_t* atommc) {
-   static char buffer[1000];
+// Construct a complete file path from the string in the global data area
+static char *getFilename(atommc_t* atommc) {
+   static char buffer[MAX_FILEPATH];
    // Strip any leading / characters
    int index = 0;
    while (atommc->global_data[index] == '/') {
@@ -295,22 +320,12 @@ char *getfilename(atommc_t* atommc) {
    return buffer;
 }
 
+// Compare two directory entries, based on their names
 static int cmpstringp(const void *p1, const void *p2) {
-   /* The actual arguments to this function are "pointers to
-      pointers to char", but strcmp(3) arguments are "pointers
-      to char", hence the following cast plus dereference */
    atommc_dirent_t *d1 = (atommc_dirent_t *)p1;
    atommc_dirent_t *d2 = (atommc_dirent_t *)p2;
    return strcmp(* (char * const *) d1->name, * (char * const *) d2->name);
 }
-
-// AtoMMC supports three types of file open
-
-enum {
-   MODE_READ,
-   MODE_WRITE,
-   MODE_RAF
-};
 
 // Case 1: Open Read
 // if exists and regular, mode = "r"
@@ -331,7 +346,7 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
    // Response defaults to internal error, should never occur
    atommc->response = ATOMMC_ERROR_INT_ERR;
    // Construct the filename
-   char *filename = getfilename(atommc);
+   char *filename = getFilename(atommc);
    // Stat the file
    struct stat statbuf;
    bool exists = !stat(filename, &statbuf);
@@ -346,7 +361,7 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
    // Initial checks, and pick the right mode to match AtoMMC semantics
    char *mode;
    switch (open_mode) {
-   case MODE_READ:
+   case ATOMMC_MODE_READ:
       if (exists) {
          mode = "r";
       } else {
@@ -354,7 +369,7 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
          return;
       }
       break;
-   case MODE_WRITE:
+   case ATOMMC_MODE_WRITE:
       if (exists) {
          atommc->response = ATOMMC_ERROR_EXIST;
          return;
@@ -362,7 +377,7 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
          mode = "w";
       }
       break;
-   case MODE_RAF:
+   case ATOMMC_MODE_RAF:
       if (exists) {
          mode = "r+";
       } else {
@@ -389,7 +404,7 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
    }
    // Try to open the file
    FILE **fdp = &atommc->fd[filenum];
-   *fdp = fopen(getfilename(atommc), mode);
+   *fdp = fopen(getFilename(atommc), mode);
    if (*fdp == 0) {
       atommc->response = ATOMMC_ERROR_DENIED;
       return;
@@ -404,11 +419,15 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
    }
 }
 
+// Parse a file spec into a file path and an optional wildcard
+//
+// Used by *CAT, *INFO and *DELETE, e.g.
+//
+// *INFO  ([directory path]/)... ([file path])
+// or
+// *INFO  ([directory path]/)... ([wildcard pattern])
+//
 // This code is taken from the actual AtoMMC implementation
-
-#define WILD_LEN 16
-
-char wildPattern[WILD_LEN+1];
 
 void parseWildcard(atommc_t *atommc) {
    unsigned long idx = 0;
@@ -432,19 +451,20 @@ void parseWildcard(atommc_t *atommc) {
          // Path followed by wildcard
          // Terminate dir filename at last slash and copy wildcard
          atommc->global_data[lastSlash]=0x00;
-         strncpy(wildPattern,(const char*)&atommc->global_data[lastSlash+1],WILD_LEN);
+         strncpy(atommc->wildPattern,(const char*)&atommc->global_data[lastSlash+1],WILD_LEN);
       } else {
          // Wildcard on it's own
          // Copy wildcard, then set path to null
-         strncpy(wildPattern,(const char*)atommc->global_data,WILD_LEN);
+         strncpy(atommc->wildPattern,(const char*)atommc->global_data,WILD_LEN);
          atommc->global_data[0]=0x00;
       }
    } else {
       // No wildcard, show all files
-      strcpy(wildPattern, "*");
+      strcpy(atommc->wildPattern, "*");
    }
 }
 
+// Test whether a string matches a wildcard pattern
 // This code is taken from the actual AtoMMC implementation
 
 static int wildcmp(const char *wild, const char *string)  {
@@ -484,6 +504,13 @@ static int wildcmp(const char *wild, const char *string)  {
    return !*wild;
 }
 
+// Handle writes to the following registers:
+//   ATOMMC_CMD_REG
+//   ATOMMC_LATCH_REG
+//   ATOMMC_WRITE_DATA_REG
+//
+// Note, ATOMMC_READ_DATA_REG is read only, so is ignored here
+
 static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
    int filenum = 0;
    FILE **fdp;
@@ -517,16 +544,16 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
       fdp = &atommc->fd[filenum];
 
-      atommc->cmd = data;
+      uint8_t cmd = data;
 
       // Assume all commands are slow commands
       atommc->response = ATOMMC_STATUS_BUSY;
 
 #ifdef ATOMMC_DEBUG
-      printf("atommc: cmd=%02x\n", atommc->cmd);
+      printf("atommc: cmd=%02x\n", cmd);
 #endif
 
-      switch (atommc->cmd) {
+      switch (cmd) {
 
       case ATOMMC_CMD_DIR_OPEN:
          {
@@ -534,12 +561,12 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
             parseWildcard(atommc);
 
 #ifdef ATOMMC_DEBUG
-            printf("wildcard = %s\n", wildPattern);
-            printf("path = %s\n", getfilename(atommc));
+            printf("wildcard = %s\n", atommc->wildPattern);
+            printf("path = %s\n", getFilename(atommc));
 #endif
 
             // Cache the directory entries, in sorted order
-            DIR *dir = opendir(getfilename(atommc));
+            DIR *dir = opendir(getFilename(atommc));
             if (dir) {
                struct dirent *entry;
                int i = 0;
@@ -547,7 +574,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
                   uint8_t attr = 0;
 
-                  if (!wildcmp(wildPattern, entry->d_name)) {
+                  if (!wildcmp(atommc->wildPattern, entry->d_name)) {
                      continue;
                   }
 
@@ -591,7 +618,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          {
             // Return the next name from the caches directory
             if (atommc->dir_index < atommc->dir_size) {
-               memset(atommc->global_data, 0, 0x100);
+               memset(atommc->global_data, 0, sizeof(atommc->global_data));
                char *name = atommc->dirsorted[atommc->dir_index]->name;
                strcpy((char *)atommc->global_data, name);
                // Additional metadata folloes the name
@@ -620,7 +647,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
       case ATOMMC_CMD_DIR_CWD:
          {
             // Form the new directory name
-            char *dirname = getfilename(atommc);
+            char *dirname = getFilename(atommc);
 
             // Test if it's a directory
             DIR *dir = opendir(dirname);
@@ -640,7 +667,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          break;
 
       case ATOMMC_CMD_DIR_MKDIR:
-         if (mkdir(getfilename(atommc), 0x755)) {
+         if (mkdir(getFilename(atommc), 0x755)) {
             atommc->response = ATOMMC_ERROR_DENIED;
          } else {
             atommc->response = ATOMMC_STATUS_COMPLETE;
@@ -648,7 +675,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          break;
 
       case ATOMMC_CMD_DIR_RMDIR:
-         if (rmdir(getfilename(atommc))) {
+         if (rmdir(getFilename(atommc))) {
             atommc->response = ATOMMC_ERROR_DENIED;
          } else {
             atommc->response = ATOMMC_STATUS_COMPLETE;
@@ -666,19 +693,19 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          break;
 
       case ATOMMC_CMD_FILE_OPEN_READ:
-         openFile(atommc, filenum, MODE_READ);
+         openFile(atommc, filenum, ATOMMC_MODE_READ);
          break;
 
       case ATOMMC_CMD_FILE_OPEN_RAF:
-         openFile(atommc, filenum, MODE_RAF);
+         openFile(atommc, filenum, ATOMMC_MODE_RAF);
          break;
 
       case ATOMMC_CMD_FILE_OPEN_WRITE:
-         openFile(atommc, filenum, MODE_WRITE);
+         openFile(atommc, filenum, ATOMMC_MODE_WRITE);
          break;
 
       case ATOMMC_CMD_FILE_DELETE:
-         if (remove(getfilename(atommc))) {
+         if (remove(getFilename(atommc))) {
             atommc->response = ATOMMC_ERROR_NO_PATH;
          } else {
             atommc->response = ATOMMC_STATUS_COMPLETE;
@@ -777,8 +804,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
       // Utility commands
 
       case ATOMMC_CMD_GET_CARD_TYPE:
-         // TODO: Initialize the disk at the point, should be a slow cmd
-         atommc->response = ATOMMC_CT_SD1;
+         atommc->response = ATOMMC_CT_DEFAULT;
          break;
 
       case ATOMMC_CMD_GET_PORT_DDR:
@@ -846,6 +872,16 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
    }
 }
 
+// Handle raads
+//
+// The read address is actually ignored (the hardware actually
+// works like this).
+//
+// If the last command was INIT_READ then, the next byte from the
+// global data area is returned.
+//
+// Otherwise the last command response is returned.
+
 static uint8_t _atommc_read(atommc_t* atommc, uint8_t addr) {
    uint8_t data = atommc->response;
    if (atommc->address == ATOMMC_READ_DATA_REG) {
@@ -857,6 +893,8 @@ static uint8_t _atommc_read(atommc_t* atommc, uint8_t addr) {
    }
    return data;
 }
+
+// Handle reads or writes
 
 uint64_t atommc_iorq(atommc_t* atommc, uint64_t pins) {
     if ((pins & (ATOMMC_CS)) == ATOMMC_CS) {
@@ -875,6 +913,8 @@ uint64_t atommc_iorq(atommc_t* atommc, uint64_t pins) {
     }
     return pins;
 }
+
+// Tick is currently empty, as this is a purely functional emulation
 
 void atommc_tick(atommc_t* atommc) {
 }
