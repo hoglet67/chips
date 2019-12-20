@@ -142,16 +142,16 @@ extern "C" {
 // Status codes
 #define ATOMMC_STATUS_OK                   (0x3F)
 #define ATOMMC_STATUS_COMPLETE             (0x40)
+#define ATOMMC_STATUS_EOF                  (0x60)
 #define ATOMMC_STATUS_BUSY                 (0x80)
 
-#define ATOMMC_ERROR_MASK                  (0x3F)
-
-// To be or'd with STATUS_COMPLETE
-#define ATOMMC_ERROR_NO_DATA               (0x08)
-#define ATOMMC_ERROR_INVALID_DRIVE         (0x09)
-#define ATOMMC_ERROR_READ_ONLY             (0x0A)
-#define ATOMMC_ERROR_ALREADY_MOUNT         (0x0A)
-#define ERROR_TOO_MANY_OPEN                (0x12)
+// Error Codes
+#define ATOMMC_ERROR_INT_ERR               (0x42)
+#define ATOMMC_ERROR_NO_FILE               (0x44)
+#define ATOMMC_ERROR_NO_PATH               (0x45)
+#define ATOMMC_ERROR_DENIED                (0x47)
+#define ATOMMC_ERROR_EXIST                 (0x48)
+#define ATOMMC_ERROR_TOO_MANY_OPEN         (0x52)
 
 // Offset returned file numbers by 0x20, to disambiguate from errors
 #define FILENUM_OFFSET                     (0x20)
@@ -162,25 +162,6 @@ extern "C" {
 #define ATOMMC_CT_SD2   0x04            /* SD ver 2 */
 #define ATOMMC_CT_SDC   (CT_SD1|CT_SD2) /* SD */
 #define ATOMMC_CT_BLOCK 0x08            /* Block addressing */
-
-typedef enum {
-    FR_OK = 0,          /* 0 */
-    FR_DISK_ERR,        /* 1 */
-    FR_INT_ERR,         /* 2 */
-    FR_NOT_READY,       /* 3 */
-    FR_NO_FILE,         /* 4 */
-    FR_NO_PATH,         /* 5 */
-    FR_INVALID_NAME,    /* 6 */
-    FR_DENIED,          /* 7 */
-    FR_EXIST,           /* 8 */
-    FR_INVALID_OBJECT,  /* 9 */
-    FR_WRITE_PROTECTED, /* 10 */
-    FR_INVALID_DRIVE,   /* 11 */
-    FR_NOT_ENABLED,     /* 12 */
-    FR_NO_FILESYSTEM,   /* 13 */
-    FR_MKFS_ABORTED,    /* 14 */
-    FR_TIMEOUT          /* 15 */
-} FRESULT;
 
 typedef uint8_t (*atommc_in_t)(int port_id, void* user_data);
 typedef void (*atommc_out_t)(int port_id, uint8_t data, void* user_data);
@@ -348,7 +329,7 @@ enum {
 
 static void openFile(atommc_t* atommc, int filenum, int open_mode) {
    // Response defaults to internal error, should never occur
-   atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+   atommc->response = ATOMMC_ERROR_INT_ERR;
    // Construct the filename
    char *filename = getfilename(atommc);
    // Stat the file
@@ -359,7 +340,7 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
    // This error is common to all three modes
    // and will typical mean trying read a directory
    if (exists && !regular) {
-      atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+      atommc->response = ATOMMC_ERROR_DENIED;
       return;
    }
    // Initial checks, and pick the right mode to match AtoMMC semantics
@@ -369,13 +350,13 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
       if (exists) {
          mode = "r";
       } else {
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_FILE;
+         atommc->response = ATOMMC_ERROR_NO_FILE;
          return;
       }
       break;
    case MODE_WRITE:
       if (exists) {
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_EXIST;
+         atommc->response = ATOMMC_ERROR_EXIST;
          return;
       } else {
          mode = "w";
@@ -403,19 +384,19 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
       }
    }
    if (filenum == -1) {
-      atommc->response = ATOMMC_STATUS_COMPLETE | ERROR_TOO_MANY_OPEN;
+      atommc->response = ATOMMC_ERROR_TOO_MANY_OPEN;
       return;
    }
    // Try to open the file
    FILE **fdp = &atommc->fd[filenum];
    *fdp = fopen(getfilename(atommc), mode);
    if (*fdp == 0) {
-      atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+      atommc->response = ATOMMC_ERROR_DENIED;
       return;
    }
    // And return the appropriate response
    if (*fdp == 0) {
-      atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+      atommc->response = ATOMMC_ERROR_DENIED;
    } else if (filenum) {
       atommc->response = ATOMMC_STATUS_COMPLETE | FILENUM_OFFSET | filenum;
    } else {
@@ -601,7 +582,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
                atommc->dir_index = 0;
                atommc->response = ATOMMC_STATUS_OK;
             } else {
-               atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_PATH;
+               atommc->response = ATOMMC_ERROR_NO_PATH;
             }
          }
          break;
@@ -648,19 +629,19 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
                closedir(dir);
                atommc->response = ATOMMC_STATUS_COMPLETE;
             } else {
-               atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_PATH;
+               atommc->response = ATOMMC_ERROR_NO_PATH;
             }
          }
          break;
 
       case ATOMMC_CMD_DIR_GETCWD:
          // This is never used by the AtoMMC filesystem ROM
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         atommc->response = ATOMMC_ERROR_INT_ERR;
          break;
 
       case ATOMMC_CMD_DIR_MKDIR:
          if (mkdir(getfilename(atommc), 0x755)) {
-            atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+            atommc->response = ATOMMC_ERROR_DENIED;
          } else {
             atommc->response = ATOMMC_STATUS_COMPLETE;
          }
@@ -668,14 +649,14 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
       case ATOMMC_CMD_DIR_RMDIR:
          if (rmdir(getfilename(atommc))) {
-            atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+            atommc->response = ATOMMC_ERROR_DENIED;
          } else {
             atommc->response = ATOMMC_STATUS_COMPLETE;
          }
          break;
 
       case ATOMMC_CMD_FILE_CLOSE:
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         atommc->response = ATOMMC_ERROR_INT_ERR;
          if (*fdp) {
             if (fclose(*fdp) == 0) {
                atommc->response = ATOMMC_STATUS_COMPLETE;
@@ -698,14 +679,14 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
       case ATOMMC_CMD_FILE_DELETE:
          if (remove(getfilename(atommc))) {
-            atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_PATH;
+            atommc->response = ATOMMC_ERROR_NO_PATH;
          } else {
             atommc->response = ATOMMC_STATUS_COMPLETE;
          }
          break;
 
       case ATOMMC_CMD_FILE_GETINFO:
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         atommc->response = ATOMMC_ERROR_INT_ERR;
          if (*fdp) {
             struct stat statbuf;
             if (fstat(fileno(*fdp), &statbuf) == 0) {
@@ -717,13 +698,13 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
                *(uint32_t *)(atommc->global_data + 8) = ftell(*fdp);
                // File attributes (TODO)
                atommc->global_data[12] = 0;
-               atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+               atommc->response = ATOMMC_ERROR_INT_ERR;
             }
          }
          break;
 
       case ATOMMC_CMD_FILE_SEEK:
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         atommc->response = ATOMMC_ERROR_INT_ERR;
          if (*fdp) {
             int offset = *(uint32_t *)(&atommc->global_data[0]);
             fseek(*fdp, offset, SEEK_SET);
@@ -742,7 +723,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          break;
 
       case ATOMMC_CMD_READ_BYTES:
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         atommc->response = ATOMMC_ERROR_INT_ERR;
          if (*fdp) {
             int len = atommc->latch;
             if (len == 0) {
@@ -750,12 +731,16 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
             }
             if (fread(atommc->global_data, len, 1, *fdp) == 1) {
                atommc->response = ATOMMC_STATUS_COMPLETE;
+            } else if (feof(*fdp)) {
+               atommc->response = ATOMMC_STATUS_EOF;
+            } else {
+               atommc->response = ATOMMC_ERROR_DENIED;
             }
          }
          break;
 
       case ATOMMC_CMD_WRITE_BYTES:
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         atommc->response = ATOMMC_ERROR_INT_ERR;
          if (*fdp) {
             int len = atommc->latch;
             if (len == 0) {
@@ -763,13 +748,15 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
             }
             if (fwrite(atommc->global_data, len, 1, *fdp) == 1) {
                atommc->response = ATOMMC_STATUS_COMPLETE;
+            } else {
+               atommc->response = ATOMMC_ERROR_DENIED;
             }
          }
          break;
 
       // This is never used by the AtoMMC filesystem ROM
       case ATOMMC_CMD_EXEC_PACKET:
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         atommc->response = ATOMMC_ERROR_INT_ERR;
          break;
 
       // SDDOS image commands
@@ -784,7 +771,7 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
       case ATOMMC_CMD_SER_IMG_INFO:
       case ATOMMC_CMD_VALID_IMG_NAMES:
       case ATOMMC_CMD_IMG_UNMOUNT:
-         atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+         atommc->response = ATOMMC_ERROR_INT_ERR;
          break;
 
       // Utility commands
