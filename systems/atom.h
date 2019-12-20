@@ -88,6 +88,14 @@ typedef enum {
 #define ATOM_JOYSTICK_UP    (1<<3)
 #define ATOM_JOYSTICK_BTN   (1<<4)
 
+/* special atom keys */
+#define ATOM_KEY_BREAK          (0xff)
+#define ATOM_KEY_SHIFT          (0xfe)
+#define ATOM_KEY_CTRL           (0xfd)
+#define ATOM_KEY_REPEAT         (0xfc)
+#define ATOM_KEY_COPY           (0xfb)
+#define ATOM_KEY_LOCK           (0xfa)
+
 /* audio sample data callback */
 typedef void (*atom_audio_callback_t)(const float* samples, int num_samples, void* user_data);
 
@@ -141,6 +149,10 @@ typedef struct {
     uint8_t mmc_latch;
     mem_t mem;
     kbd_t kbd;
+    bool shift;
+    bool ctrl;
+    bool rept;
+    bool in_reset;
     void* user_data;
     atom_audio_callback_t audio_cb;
     int num_samples;
@@ -344,8 +356,31 @@ void atom_exec(atom_t* sys, uint32_t micro_seconds) {
     kbd_update(&sys->kbd);
 }
 
+void handle_shift_ctrl_rept_break(atom_t* sys, int key_code, bool val) {
+
+   // Handle special keys, like shift, control, repeat and break
+   switch (key_code) {
+   case ATOM_KEY_BREAK:
+      sys->in_reset = val;
+      atom_reset(sys);
+      break;
+   case ATOM_KEY_SHIFT:
+      sys->shift = val;
+      break;
+   case ATOM_KEY_CTRL:
+      sys->ctrl = val;
+      break;
+   case ATOM_KEY_REPEAT:
+      sys->rept = val;
+      break;
+   }
+}
+
 void atom_key_down(atom_t* sys, int key_code) {
     CHIPS_ASSERT(sys && sys->valid);
+
+    // Handle shift/ctrl/rept/break, remap higher key codes
+    handle_shift_ctrl_rept_break(sys, key_code, true);
     switch (sys->joystick_type) {
         case ATOM_JOYSTICKTYPE_NONE:
             kbd_key_down(&sys->kbd, key_code);
@@ -365,6 +400,8 @@ void atom_key_down(atom_t* sys, int key_code) {
 
 void atom_key_up(atom_t* sys, int key_code) {
     CHIPS_ASSERT(sys && sys->valid);
+    // Handle shift/ctrl/rept/break, remap higher key codes
+    handle_shift_ctrl_rept_break(sys, key_code, false);
     switch (sys->joystick_type) {
         case ATOM_JOYSTICKTYPE_NONE:
             kbd_key_up(&sys->kbd, key_code);
@@ -600,7 +637,13 @@ uint8_t _atom_ppi_in(int port_id, void* user_data) {
     uint8_t data = 0;
     if (I8255_PORT_B == port_id) {
         /* keyboard row state */
-        data = ~kbd_scan_lines(&sys->kbd);
+        if (kbd_test_columns(&sys->kbd, 0x3f)) {
+           // A key is pressed somewhere, scan normally
+           data = ~kbd_scan_lines(&sys->kbd);
+        } else {
+           // No key is pressed, so return the shift/ctrl state
+           data = ~((sys->shift << 7) | (sys->ctrl << 6));
+        }
     }
     else if (I8255_PORT_C == port_id) {
         /*  PPI port C input:
@@ -615,7 +658,7 @@ uint8_t _atom_ppi_in(int port_id, void* user_data) {
             data |= (1<<4);
         }
         /* FIXME: always send REPEAT key as 'not pressed' */
-        data |= (1<<6);
+        data |= (sys->rept^1)<<6;
         /* vblank pin (cleared during vblank) */
         if (0 == (sys->vdg.pins & MC6847_FS)) {
             data |= (1<<7);
@@ -685,6 +728,8 @@ static void _atom_init_keymap(atom_t* sys) {
     kbd_register_key(&sys->kbd, 0x15, 6, 5, ctrl);      /* Ctrl+U end screen */
     kbd_register_key(&sys->kbd, 0x18, 3, 5, ctrl);      /* Ctrl+X cancel */
     kbd_register_key(&sys->kbd, 0x1B, 0, 5, 0);         /* escape */
+    kbd_register_key(&sys->kbd, ATOM_KEY_LOCK, 4, 0, 0);
+    kbd_register_key(&sys->kbd, ATOM_KEY_COPY, 5, 1, 0);
 }
 
 static uint32_t _atom_xorshift32(uint32_t x) {
