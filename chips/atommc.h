@@ -277,15 +277,25 @@ void atommc_reset(atommc_t* atommc) {
 
 char *getfilename(atommc_t* atommc) {
    static char buffer[1000];
-   if (atommc->global_data[0]) {
+   // Strip any leading / characters
+   int index = 0;
+   while (atommc->global_data[index] == '/') {
+      index++;
+   }
+   if (index) {
+      // Path is absolute
+      sprintf(buffer, "./%s", (char *)atommc->global_data + index);
+   } else if (atommc->global_data[0]) {
+      // Path is relative to cwd
       sprintf(buffer, "%s/%s", atommc->cwd, (char *)atommc->global_data);
+   } else {
+      // Path is null
+      return NULL;
+   }
 #ifdef ATOMMC_DEBUG
       printf("%s\n", buffer);
 #endif
-      return buffer;
-   } else {
-      return 0;
-   }
+   return buffer;
 }
 
 static int cmpstringp(const void *p1, const void *p2) {
