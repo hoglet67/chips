@@ -117,6 +117,10 @@ typedef struct {
     int rom_abasic_size;
     int rom_afloat_size;
     int rom_dosrom_size;
+
+    /* AtoMMC configuration */
+    bool atommc_enabled;
+    bool atommc_autoboot;
 } atom_desc_t;
 
 /* Acorn Atom emulation state */
@@ -161,6 +165,9 @@ typedef struct {
     int tape_size;  /* tape_size is > 0 if a tape is inserted */
     int tape_pos;
     uint8_t tape_buf[ATOM_MAX_TAPE_SIZE];
+    /* AtoMMC configuration */
+    bool atommc_enabled;
+    bool atommc_autoboot;
 } atom_t;
 
 /* initialize a new Atom instance */
@@ -236,6 +243,8 @@ void atom_init(atom_t* sys, const atom_desc_t* desc) {
     sys->user_data = desc->user_data;
     sys->audio_cb = desc->audio_cb;
     sys->num_samples = _ATOM_DEFAULT(desc->audio_num_samples, ATOM_DEFAULT_AUDIO_SAMPLES);
+    sys->atommc_enabled = desc->atommc_enabled;
+    sys->atommc_autoboot = desc->atommc_autoboot;
     CHIPS_ASSERT(sys->num_samples <= ATOM_MAX_AUDIO_SAMPLES);
     CHIPS_ASSERT(desc->rom_abasic && (desc->rom_abasic_size == sizeof(sys->rom_abasic)));
     memcpy(sys->rom_abasic, desc->rom_abasic, sizeof(sys->rom_abasic));
@@ -274,12 +283,15 @@ void atom_init(atom_t* sys, const atom_desc_t* desc) {
     via_desc.user_data = sys;
     m6522_init(&sys->via, &via_desc);
 
-    atommc_desc_t atommc_desc;
-    _ATOM_CLEAR(atommc_desc);
-    atommc_desc.in_cb = _atom_atommc_in;
-    atommc_desc.out_cb = _atom_atommc_out;
-    atommc_desc.user_data = sys;
-    atommc_init(&sys->atommc, &atommc_desc);
+    if (sys->atommc_enabled) {
+       atommc_desc_t atommc_desc;
+       _ATOM_CLEAR(atommc_desc);
+       atommc_desc.in_cb = _atom_atommc_in;
+       atommc_desc.out_cb = _atom_atommc_out;
+       atommc_desc.user_data = sys;
+       atommc_desc.autoboot = sys->atommc_autoboot;
+       atommc_init(&sys->atommc, &atommc_desc);
+    }
 
     const int audio_hz = _ATOM_DEFAULT(desc->audio_sample_rate, 44100);
     const float audio_vol = _ATOM_DEFAULT(desc->audio_volume, 0.5f);
@@ -329,7 +341,9 @@ void atom_reset(atom_t* sys) {
     sys->pins |= M6502_RES;
     i8255_reset(&sys->ppi);
     m6522_reset(&sys->via);
-    atommc_reset(&sys->atommc);
+    if (sys->atommc_enabled) {
+       atommc_reset(&sys->atommc);
+    }
     mc6847_reset(&sys->vdg);
     beeper_reset(&sys->beeper);
     m6581_reset(&sys->sid);
@@ -479,7 +493,9 @@ uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
     m6522_tick(&sys->via);
 
     /* tick the AtoMMC */
-    atommc_tick(&sys->atommc);
+    if (sys->atommc_enabled) {
+       atommc_tick(&sys->atommc);
+    }
 
     /* tick the 2.4khz counter */
     sys->counter_2_4khz++;
@@ -527,13 +543,39 @@ uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
         }
         else if ((addr >= 0xB400) && (addr < 0xB800)) {
 
-            /* FixMe: should do this with pins! */
-            sys->atommc.port_data = ~(sys->kbd_joymask | sys->joy_joymask);
+           if (sys->atommc_enabled) {
 
-            uint64_t atommc_pins = (pins & M6502_PIN_MASK)|ATOMMC_CS;
-            /* NOTE: ATOMMC_RW pin is identical with M6502_RW) */
-            pins = atommc_iorq(&sys->atommc, atommc_pins) & M6502_PIN_MASK;
+              /* FixMe: should do this with pins! */
+              sys->atommc.port_data = ~(sys->kbd_joymask | sys->joy_joymask);
 
+              uint64_t atommc_pins = (pins & M6502_PIN_MASK)|ATOMMC_CS;
+              /* NOTE: ATOMMC_RW pin is identical with M6502_RW) */
+              pins = atommc_iorq(&sys->atommc, atommc_pins) & M6502_PIN_MASK;
+
+           } else {
+
+            /* a quick'n'dirty hack for joystick input */
+              if (pins & M6502_RW) {
+                 /* read from MMC extension */
+                 if (addr == 0xB400) {
+                    /* reading from 0xB400 returns a status/error code, the important
+                        ones are STATUS_OK=0x3F, and STATUS_BUSY=0x80, STATUS_COMPLETE
+                        together with an error code is used to communicate errors
+                    */
+                    M6502_SET_DATA(pins, 0x3F);
+                 }
+                 else if ((addr == 0xB401) && (sys->mmc_cmd == 0xA2)) {
+                    /* read MMC joystick */
+                    M6502_SET_DATA(pins, ~(sys->kbd_joymask | sys->joy_joymask));
+                 }
+              }
+              else {
+                 /* write to MMC extension */
+                 if (addr == 0xB400) {
+                    sys->mmc_cmd = M6502_GET_DATA(pins);
+                 }
+              }
+           }
         }
         else if ((addr >= 0xB800) && (addr < 0xBC00)) {
             /* 6522 VIA: http://www.acornatom.nl/sites/fpga/www.howell1964.freeserve.co.uk/acorn/atom/amb/amb_6522.htm */

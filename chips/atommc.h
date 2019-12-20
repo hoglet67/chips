@@ -174,6 +174,7 @@ typedef struct {
     atommc_in_t in_cb;
     atommc_out_t out_cb;
     void* user_data;
+    bool autoboot;
 } atommc_desc_t;
 
 /* Limits on file/directory lengths */
@@ -276,7 +277,7 @@ void atommc_init(atommc_t* atommc, const atommc_desc_t* desc) {
    atommc->out_cb = desc->out_cb;
    atommc->user_data = desc->user_data;
    atommc_reset(atommc);
-   atommc->cfg_byte = 0xE0;
+   atommc->cfg_byte = desc->autoboot ? 0xA0 : 0xE0;
    // All the files are packaged in a subdirectory called mmc
    if (chdir("mmc")) {
 #ifdef ATOMMC_DEBUG
