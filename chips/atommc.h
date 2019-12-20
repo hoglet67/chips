@@ -283,6 +283,14 @@ void atommc_init(atommc_t* atommc, const atommc_desc_t* desc) {
 void atommc_reset(atommc_t* atommc) {
    CHIPS_ASSERT(atommc);
    atommc->heartbeat = 0x55;
+   // Close any open files
+   for (int i = 0; i < MAX_FD; i++) {
+      if (atommc->fd[i]) {
+         fclose(atommc->fd[i]);
+         atommc->fd[i] = NULL;
+      }
+   }
+   // Reset CWD to the root
    strcpy(atommc->cwd, ".");
 }
 
