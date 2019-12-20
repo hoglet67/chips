@@ -305,7 +305,75 @@ static int cmpstringp(const void *p1, const void *p2) {
    return strcmp(* (char * const *) p1, * (char * const *) p2);
 }
 
-static int findFile(atommc_t* atommc, int filenum) {
+// AtoMMC supports three types of file open
+
+enum {
+   MODE_READ,
+   MODE_WRITE,
+   MODE_RAF
+};
+
+// Case 1: Open Read
+// if exists and regular, mode = "r"
+// if exists and not regular, error = "DENIED"
+// if not exists, error "NOT FOUND"
+
+// Case 2: Open Write
+// if exists and regular, error = "EXISTS"
+// if exists and not regular, error = "DENIED"
+// if not exists, mode ="w"
+
+// Case 3: Open RAF
+// if exists and regular, mode = r+
+// if exists and not regulat=r, error = "DENIED"
+// if not exists, mode = w+
+
+static void openFile(atommc_t* atommc, int filenum, int open_mode) {
+   // Response defaults to internal error, should never occur
+   atommc->response = ATOMMC_STATUS_COMPLETE | FR_INT_ERR;
+   // Construct the filename
+   char *filename = getfilename(atommc);
+   // Stat the file
+   struct stat statbuf;
+   bool exists = !stat(filename, &statbuf);
+   bool regular = exists && (statbuf.st_mode & S_IFREG);
+
+   // This error is common to all three modes
+   // and will typical mean trying read a directory
+   if (exists && !regular) {
+      atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+      return;
+   }
+   // Initial checks, and pick the right mode to match AtoMMC semantics
+   char *mode;
+   switch (open_mode) {
+   case MODE_READ:
+      if (exists) {
+         mode = "r";
+      } else {
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_FILE;
+         return;
+      }
+      break;
+   case MODE_WRITE:
+      if (exists) {
+         atommc->response = ATOMMC_STATUS_COMPLETE | FR_EXIST;
+         return;
+      } else {
+         mode = "w";
+      }
+      break;
+   case MODE_RAF:
+      if (exists) {
+         mode = "r+";
+      } else {
+         mode = "w+";
+      }
+      break;
+   default:
+      return;
+   }
+   // Find a free file number
    if (filenum > 0) {
       filenum = -1;
       if (!atommc->fd[1]) {
@@ -318,8 +386,23 @@ static int findFile(atommc_t* atommc, int filenum) {
    }
    if (filenum == -1) {
       atommc->response = ATOMMC_STATUS_COMPLETE | ERROR_TOO_MANY_OPEN;
+      return;
    }
-   return filenum;
+   // Try to open the file
+   FILE **fdp = &atommc->fd[filenum];
+   *fdp = fopen(getfilename(atommc), mode);
+   if (*fdp == 0) {
+      atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+      return;
+   }
+   // And return the appropriate response
+   if (*fdp == 0) {
+      atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
+   } else if (filenum) {
+      atommc->response = ATOMMC_STATUS_COMPLETE | FILENUM_OFFSET | filenum;
+   } else {
+      atommc->response = ATOMMC_STATUS_COMPLETE;
+   }
 }
 
 static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
@@ -470,68 +553,15 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
          break;
 
       case ATOMMC_CMD_FILE_OPEN_READ:
-         // Search for a free file handle, or respond with Too Many Open Files
-         filenum = findFile(atommc, filenum);
-         if (filenum >= 0) {
-            fdp = &atommc->fd[filenum];
-            *fdp = fopen(getfilename(atommc), "r");
-            if (*fdp == 0) {
-               // File doesn't exist, return an error
-               atommc->response = ATOMMC_STATUS_COMPLETE | FR_NO_FILE;
-            } else if (filenum) {
-               atommc->response = ATOMMC_STATUS_COMPLETE | FILENUM_OFFSET | filenum;
-            } else {
-               atommc->response = ATOMMC_STATUS_COMPLETE;
-            }
-         }
+         openFile(atommc, filenum, MODE_READ);
          break;
 
       case ATOMMC_CMD_FILE_OPEN_RAF:
-         // Search for a free file handle, or respond with Too Many Open Files
-         filenum = findFile(atommc, filenum);
-         if (filenum >= 0) {
-            fdp = &atommc->fd[filenum];
-            // First check if the file already exists
-            *fdp = fopen(getfilename(atommc), "r+");
-            if (*fdp == 0) {
-               // File doesn't exist, create it
-               *fdp = fopen(getfilename(atommc), "w+");
-            }
-            if (*fdp == 0) {
-               // File doesn't exist, return an error
-               atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
-            } else if (filenum) {
-               atommc->response = ATOMMC_STATUS_COMPLETE | FILENUM_OFFSET | filenum;
-            } else {
-               atommc->response = ATOMMC_STATUS_COMPLETE;
-            }
-         }
+         openFile(atommc, filenum, MODE_RAF);
          break;
 
       case ATOMMC_CMD_FILE_OPEN_WRITE:
-         // Search for a free file handle, or respond with Too Many Open Files
-         filenum = findFile(atommc, filenum);
-         if (filenum >= 0) {
-            fdp = &atommc->fd[filenum];
-            // First check if the file already exists
-            *fdp = fopen(getfilename(atommc), "r");
-            if (*fdp == 0) {
-               // File doesn't exist, create it
-               *fdp = fopen(getfilename(atommc), "w");
-               if (*fdp == 0) {
-                  atommc->response = ATOMMC_STATUS_COMPLETE | FR_DENIED;
-               } else if (filenum) {
-                  atommc->response = ATOMMC_STATUS_COMPLETE | FILENUM_OFFSET | filenum;
-               } else {
-                  atommc->response = ATOMMC_STATUS_COMPLETE;
-               }
-            } else {
-               // File exists, give an error
-               fclose(*fdp);
-               *fdp = NULL;
-               atommc->response = ATOMMC_STATUS_COMPLETE | FR_EXIST;
-            }
-         }
+         openFile(atommc, filenum, MODE_WRITE);
          break;
 
       case ATOMMC_CMD_FILE_DELETE:
