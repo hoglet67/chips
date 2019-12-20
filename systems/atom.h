@@ -150,8 +150,6 @@ typedef struct {
     uint8_t rom_abasic[0x2000];
     uint8_t rom_afloat[0x1000];
     uint8_t rom_dosrom[0x1000];
-    /* break key handling */
-    bool in_reset;
     /* tape loading */
     int tape_size;  /* tape_size is > 0 if a tape is inserted */
     int tape_pos;
@@ -363,11 +361,6 @@ void atom_key_down(atom_t* sys, int key_code) {
             }
             break;
     }
-    // Handle break key
-    if (key_code == 0xFF) {
-       sys->in_reset = 1;
-       atom_reset(sys);
-    }
 }
 
 void atom_key_up(atom_t* sys, int key_code) {
@@ -386,11 +379,6 @@ void atom_key_up(atom_t* sys, int key_code) {
                 default:    kbd_key_up(&sys->kbd, key_code); break;
             }
             break;
-    }
-    // Handle break key
-    if (key_code == 0xFF) {
-       sys->in_reset = 0;
-       atom_reset(sys);
     }
 }
 
@@ -414,9 +402,7 @@ uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
     bool sample = false;
 
     /* tick the CPU */
-    if (!sys->in_reset) {
-        pins = m6502_tick(&sys->cpu, pins);
-    }
+    pins = m6502_tick(&sys->cpu, pins);
 
     /* tick the video chip */
     mc6847_tick(&sys->vdg);
