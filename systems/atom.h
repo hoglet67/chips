@@ -133,9 +133,6 @@ typedef struct {
     bool state_2_4khz;
     bool out_cass0;
     bool out_cass1;
-    bool shift;
-    bool ctrl;
-    bool rept;
     atom_joystick_type_t joystick_type;
     atom_sid_type_t sid_type;
     uint8_t kbd_joymask;        /* joystick mask from keyboard-joystick-emulation */
@@ -349,37 +346,8 @@ void atom_exec(atom_t* sys, uint32_t micro_seconds) {
     kbd_update(&sys->kbd);
 }
 
-void handle_shift_ctrl_rept(atom_t* sys, int key_code, bool val) {
-   switch (key_code) {
-   case SAPP_KEYCODE_LEFT_SHIFT:
-   case SAPP_KEYCODE_RIGHT_SHIFT:
-      sys->shift = val;
-      break;
-   case SAPP_KEYCODE_LEFT_CONTROL:
-   case SAPP_KEYCODE_RIGHT_CONTROL:
-      sys->ctrl = val;
-      break;
-   case SAPP_KEYCODE_RIGHT_ALT:
-   case SAPP_KEYCODE_LEFT_ALT:
-   case SAPP_KEYCODE_KP_0:
-      sys->rept = val;
-      break;
-   }
-}
-
 void atom_key_down(atom_t* sys, int key_code) {
     CHIPS_ASSERT(sys && sys->valid);
-    // Handle shift/ctrl/rept
-    handle_shift_ctrl_rept(sys, key_code, true);
-    // Handle break key
-    if (key_code == SAPP_KEYCODE_F10) {
-       sys->in_reset = true;
-       atom_reset(sys);
-    }
-    // Remap key codes, as key matrix has maximum of 256 keys
-    if (key_code >= 256) {
-       key_code -= 128;
-    }
     switch (sys->joystick_type) {
         case ATOM_JOYSTICKTYPE_NONE:
             kbd_key_down(&sys->kbd, key_code);
@@ -395,22 +363,15 @@ void atom_key_down(atom_t* sys, int key_code) {
             }
             break;
     }
+    // Handle break key
+    if (key_code == 0xFF) {
+       sys->in_reset = 1;
+       atom_reset(sys);
+    }
 }
 
 void atom_key_up(atom_t* sys, int key_code) {
     CHIPS_ASSERT(sys && sys->valid);
-    // Handle shift/ctrl/rept
-    // Handle shift/ctrl/rept
-    handle_shift_ctrl_rept(sys, key_code, false);
-    // Handle break key
-    if (key_code == SAPP_KEYCODE_F10) {
-       sys->in_reset = false;
-       atom_reset(sys);
-    }
-    // Remap key codes, as key matrix has maximum of 256 keys
-    if (key_code >= 256) {
-       key_code -= 128;
-    }
     switch (sys->joystick_type) {
         case ATOM_JOYSTICKTYPE_NONE:
             kbd_key_up(&sys->kbd, key_code);
@@ -425,6 +386,11 @@ void atom_key_up(atom_t* sys, int key_code) {
                 default:    kbd_key_up(&sys->kbd, key_code); break;
             }
             break;
+    }
+    // Handle break key
+    if (key_code == 0xFF) {
+       sys->in_reset = 0;
+       atom_reset(sys);
     }
 }
 
@@ -442,7 +408,6 @@ void atom_joystick(atom_t* sys, uint8_t mask) {
     CHIPS_ASSERT(sys && sys->valid);
     sys->joy_joymask = mask;
 }
-
 
 /* CPU tick callback */
 uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
@@ -649,7 +614,7 @@ uint8_t _atom_ppi_in(int port_id, void* user_data) {
     uint8_t data = 0;
     if (I8255_PORT_B == port_id) {
         /* keyboard row state */
-       data = ~((sys->shift << 7) | (sys->ctrl << 6) | (kbd_scan_lines(&sys->kbd) & 0x3f));
+        data = ~kbd_scan_lines(&sys->kbd);
     }
     else if (I8255_PORT_C == port_id) {
         /*  PPI port C input:
@@ -664,7 +629,7 @@ uint8_t _atom_ppi_in(int port_id, void* user_data) {
             data |= (1<<4);
         }
         /* FIXME: always send REPEAT key as 'not pressed' */
-        data |= (sys->rept^1)<<6;
+        data |= (1<<6);
         /* vblank pin (cleared during vblank) */
         if (0 == (sys->vdg.pins & MC6847_FS)) {
             data |= (1<<7);
@@ -699,67 +664,41 @@ static void _atom_init_keymap(atom_t* sys) {
         line 7 is the Shift key
     */
     kbd_init(&sys->kbd, 1);
-
-    // Keycodes in the 256-383 range are mapped down to 128-255
-    // as the keyboard matrix only support 256 key codes
-    //
-    //                                                                // Atom Key
-    kbd_register_key(&sys->kbd,    SAPP_KEYCODE_ESCAPE-128, 0, 5, 0); // Escape
-    kbd_register_key(&sys->kbd,                        'Z', 1, 5, 0); // Z
-    kbd_register_key(&sys->kbd,                        'Y', 2, 5, 0); // Y
-    kbd_register_key(&sys->kbd,                        'X', 3, 5, 0); // X
-    kbd_register_key(&sys->kbd,                        'W', 4, 5, 0); // W
-    kbd_register_key(&sys->kbd,                        'V', 5, 5, 0); // V
-    kbd_register_key(&sys->kbd,                        'U', 6, 5, 0); // U
-    kbd_register_key(&sys->kbd,                        'T', 7, 5, 0); // T
-    kbd_register_key(&sys->kbd,                        'S', 8, 5, 0); // S
-    kbd_register_key(&sys->kbd,                        'R', 9, 5, 0); // R
-    kbd_register_key(&sys->kbd,                        'Q', 0, 4, 0); // Q
-    kbd_register_key(&sys->kbd,                        'P', 1, 4, 0); // P
-    kbd_register_key(&sys->kbd,                        'O', 2, 4, 0); // O
-    kbd_register_key(&sys->kbd,                        'N', 3, 4, 0); // N
-    kbd_register_key(&sys->kbd,                        'M', 4, 4, 0); // M
-    kbd_register_key(&sys->kbd,                        'L', 5, 4, 0); // L
-    kbd_register_key(&sys->kbd,                        'K', 6, 4, 0); // K
-    kbd_register_key(&sys->kbd,                        'J', 7, 4, 0); // J
-    kbd_register_key(&sys->kbd,                        'I', 8, 4, 0); // I
-    kbd_register_key(&sys->kbd,                        'H', 9, 4, 0); // H
-    kbd_register_key(&sys->kbd,                        'G', 0, 3, 0); // G
-    kbd_register_key(&sys->kbd,                        'F', 1, 3, 0); // F
-    kbd_register_key(&sys->kbd,                        'E', 2, 3, 0); // E
-    kbd_register_key(&sys->kbd,                        'D', 3, 3, 0); // D
-    kbd_register_key(&sys->kbd,                        'C', 4, 3, 0); // C
-    kbd_register_key(&sys->kbd,                        'B', 5, 3, 0); // B
-    kbd_register_key(&sys->kbd,                        'A', 6, 3, 0); // A
-    kbd_register_key(&sys->kbd,                       '\'', 7, 3, 0); // @
-    kbd_register_key(&sys->kbd,                        '/', 8, 3, 0); // Forward Slash
-    kbd_register_key(&sys->kbd,                        '.', 9, 3, 0); // .
-    kbd_register_key(&sys->kbd,                        '-', 0, 2, 0); // -
-    kbd_register_key(&sys->kbd,                        ',', 1, 2, 0); // ,
-    kbd_register_key(&sys->kbd,                        ';', 2, 2, 0); // ;
-    kbd_register_key(&sys->kbd,                        '=', 3, 2, 0); // :
-    kbd_register_key(&sys->kbd,                        '9', 4, 2, 0); // 9
-    kbd_register_key(&sys->kbd,                        '8', 5, 2, 0); // 8
-    kbd_register_key(&sys->kbd,                        '7', 6, 2, 0); // 7
-    kbd_register_key(&sys->kbd,                        '6', 7, 2, 0); // 6
-    kbd_register_key(&sys->kbd,                        '5', 8, 2, 0); // 5
-    kbd_register_key(&sys->kbd,                        '4', 9, 2, 0); // 4
-    kbd_register_key(&sys->kbd,                        '3', 0, 1, 0); // 3
-    kbd_register_key(&sys->kbd,                        '2', 1, 1, 0); // 2
-    kbd_register_key(&sys->kbd,                        '1', 2, 1, 0); // 1
-    kbd_register_key(&sys->kbd,                        '0', 3, 1, 0); // 0
-    kbd_register_key(&sys->kbd, SAPP_KEYCODE_BACKSPACE-128, 4, 1, 0); // Del        (mapped to Backspace)
-    kbd_register_key(&sys->kbd,       SAPP_KEYCODE_END-128, 5, 1, 0); // Copy       (mapped to End)
-    kbd_register_key(&sys->kbd,     SAPP_KEYCODE_ENTER-128, 6, 1, 0); // Return     (mapped to Return
-    kbd_register_key(&sys->kbd,        SAPP_KEYCODE_UP-128, 2, 0, 0); // Up/Down    (mapped to Up Arrow)
-    kbd_register_key(&sys->kbd,     SAPP_KEYCODE_RIGHT-128, 3, 0, 0); // Right/Left (mapped to Right Arrow)
-    kbd_register_key(&sys->kbd, SAPP_KEYCODE_CAPS_LOCK-128, 4, 0, 0); // Caps       (mapped to Caps Lock)
-    kbd_register_key(&sys->kbd,      SAPP_KEYCODE_MENU-128, 4, 0, 0); // Caps       (mapped to Menu)
-    kbd_register_key(&sys->kbd,       SAPP_KEYCODE_TAB-128, 5, 0, 0); // ^          (mapped to Tab)
-    kbd_register_key(&sys->kbd,                        ']', 6, 0, 0); // ]
-    kbd_register_key(&sys->kbd,                       '\\', 7, 0, 0); // Back Slash
-    kbd_register_key(&sys->kbd,                        '[', 8, 0, 0); // ]
-    kbd_register_key(&sys->kbd,                        ' ', 9, 0, 0); // Space
+    /* shift key is entire line 7 */
+    const int shift = (1<<0); kbd_register_modifier_line(&sys->kbd, 0, 7);
+    /* ctrl key is entire line 6 */
+    const int ctrl = (1<<1); kbd_register_modifier_line(&sys->kbd, 1, 6);
+    /* alpha-numeric keys */
+    const char* keymap =
+        /* no shift */
+        "     ^]\\[ "/**/"3210      "/* */"-,;:987654"/**/"GFEDCBA@/."/**/"QPONMLKJIH"/**/" ZYXWVUTSR"
+        /* shift */
+        "          "/* */"#\"!       "/**/"=<+*)('&%$"/**/"gfedcba ?>"/**/"qponmlkjih"/**/" zyxwvutsr";
+    for (int layer = 0; layer < 2; layer++) {
+        for (int column = 0; column < 10; column++) {
+            for (int line = 0; line < 6; line++) {
+                int c = keymap[layer*60 + line*10 + column];
+                if (c != 0x20) {
+                    kbd_register_key(&sys->kbd, c, column, line, layer?shift:0);
+                }
+            }
+        }
+    }
+    /* special keys */
+    kbd_register_key(&sys->kbd, 0x20, 9, 0, 0);         /* space */
+    kbd_register_key(&sys->kbd, 0x01, 4, 1, 0);         /* backspace */
+    kbd_register_key(&sys->kbd, 0x07, 0, 3, ctrl);      /* Ctrl+G: bleep */
+    kbd_register_key(&sys->kbd, 0x08, 3, 0, shift);     /* key left */
+    kbd_register_key(&sys->kbd, 0x09, 3, 0, 0);         /* key right */
+    kbd_register_key(&sys->kbd, 0x0A, 2, 0, shift);     /* key down */
+    kbd_register_key(&sys->kbd, 0x0B, 2, 0, 0);         /* key up */
+    kbd_register_key(&sys->kbd, 0x0D, 6, 1, 0);         /* return/enter */
+    kbd_register_key(&sys->kbd, 0x0C, 5, 4, ctrl);      /* Ctrl+L clear screen */
+    kbd_register_key(&sys->kbd, 0x0E, 3, 4, ctrl);      /* Ctrl+N page mode on */
+    kbd_register_key(&sys->kbd, 0x0F, 2, 4, ctrl);      /* Ctrl+O page mode off */
+    kbd_register_key(&sys->kbd, 0x15, 6, 5, ctrl);      /* Ctrl+U end screen */
+    kbd_register_key(&sys->kbd, 0x18, 3, 5, ctrl);      /* Ctrl+X cancel */
+    kbd_register_key(&sys->kbd, 0x1B, 0, 5, 0);         /* escape */
 }
 
 static uint32_t _atom_xorshift32(uint32_t x) {
