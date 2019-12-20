@@ -154,14 +154,14 @@ extern "C" {
 #define ERROR_TOO_MANY_OPEN                (0x12)
 
 // Offset returned file numbers by 0x20, to disambiguate from errors
-#define FILENUM_OFFSET		               (0x20)
+#define FILENUM_OFFSET                     (0x20)
 
+// SD Card Types
 #define ATOMMC_CT_MMC   0x01            /* MMC ver 3 */
 #define ATOMMC_CT_SD1   0x02            /* SD ver 1 */
 #define ATOMMC_CT_SD2   0x04            /* SD ver 2 */
 #define ATOMMC_CT_SDC   (CT_SD1|CT_SD2) /* SD */
 #define ATOMMC_CT_BLOCK 0x08            /* Block addressing */
-
 
 typedef enum {
     FR_OK = 0,          /* 0 */
@@ -197,6 +197,17 @@ typedef struct {
 #define MAX_DIRSIZE  100
 #define MAX_FD         4
 
+/* AtoMMC File Attributes */
+#define ATOMMC_ATTR_HIDDEN                 (0x02)
+#define ATOMMC_ATTR_DIR                    (0x10)
+
+/* AtoMMC Directory Entry */
+typedef struct {
+   char name[MAX_FILENAME];
+   uint8_t attr;
+   uint32_t len;
+} atommc_dirent_t;
+
 /* atommc state */
 typedef struct {
    uint8_t cmd;
@@ -214,8 +225,8 @@ typedef struct {
    // State about the currently loaded directory
    int dir_size;
    int dir_index;
-   char *dirsorted[MAX_DIRSIZE];
-   char dirlist[MAX_DIRSIZE][MAX_FILENAME];
+   atommc_dirent_t *dirsorted[MAX_DIRSIZE];
+   atommc_dirent_t dirlist[MAX_DIRSIZE];
    atommc_in_t in_cb;
    atommc_out_t out_cb;
    void* user_data;
@@ -285,15 +296,12 @@ char *getfilename(atommc_t* atommc) {
    if (index) {
       // Path is absolute
       sprintf(buffer, "./%s", (char *)atommc->global_data + index);
-   } else if (atommc->global_data[0]) {
+   } else {
       // Path is relative to cwd
       sprintf(buffer, "%s/%s", atommc->cwd, (char *)atommc->global_data);
-   } else {
-      // Path is null
-      return NULL;
    }
 #ifdef ATOMMC_DEBUG
-      printf("%s\n", buffer);
+   printf("%s\n", buffer);
 #endif
    return buffer;
 }
@@ -302,7 +310,9 @@ static int cmpstringp(const void *p1, const void *p2) {
    /* The actual arguments to this function are "pointers to
       pointers to char", but strcmp(3) arguments are "pointers
       to char", hence the following cast plus dereference */
-   return strcmp(* (char * const *) p1, * (char * const *) p2);
+   atommc_dirent_t *d1 = (atommc_dirent_t *)p1;
+   atommc_dirent_t *d2 = (atommc_dirent_t *)p2;
+   return strcmp(* (char * const *) d1->name, * (char * const *) d2->name);
 }
 
 // AtoMMC supports three types of file open
@@ -405,6 +415,86 @@ static void openFile(atommc_t* atommc, int filenum, int open_mode) {
    }
 }
 
+// This code is taken from the actual AtoMMC implementation
+
+#define WILD_LEN 16
+
+char wildPattern[WILD_LEN+1];
+
+void parseWildcard(atommc_t *atommc) {
+   unsigned long idx = 0;
+   int wildPos = -1;
+   int lastSlash = -1;
+
+   while ((idx < strlen((const char*)atommc->global_data)) && (wildPos < 0)) {
+      // Check for wildcard character
+      if((atommc->global_data[idx]=='?') || (atommc->global_data[idx]=='*'))
+         wildPos=idx;
+
+      // Check for path seperator
+      if((atommc->global_data[idx]=='\\') || (atommc->global_data[idx]=='/'))
+         lastSlash=idx;
+
+      idx++;
+   }
+
+   if (wildPos > -1) {
+      if (lastSlash > -1) {
+         // Path followed by wildcard
+         // Terminate dir filename at last slash and copy wildcard
+         atommc->global_data[lastSlash]=0x00;
+         strncpy(wildPattern,(const char*)&atommc->global_data[lastSlash+1],WILD_LEN);
+      } else {
+         // Wildcard on it's own
+         // Copy wildcard, then set path to null
+         strncpy(wildPattern,(const char*)atommc->global_data,WILD_LEN);
+         atommc->global_data[0]=0x00;
+      }
+   } else {
+      // No wildcard, show all files
+      strcpy(wildPattern, "*");
+   }
+}
+
+// This code is taken from the actual AtoMMC implementation
+
+static int wildcmp(const char *wild, const char *string)  {
+   // Written by Jack Handy - jakkhandy@hotmail.com
+   // http://www.codeproject.com/KB/string/wildcmp.aspx
+
+   const char *cp = NULL;
+   const char *mp = NULL;
+
+   while ((*string) && (*wild != '*')) {
+      if ((*wild != *string) && (*wild != '?')) {
+         return 0;
+      }
+      wild++;
+      string++;
+   }
+
+   while (*string) {
+      if (*wild == '*') {
+         if (!*++wild) {
+            return 1;
+         }
+         mp = wild;
+         cp = string+1;
+      } else if ((*wild == *string) || (*wild == '?')) {
+         wild++;
+         string++;
+      } else {
+         wild = mp;
+         string = cp++;
+      }
+   }
+
+   while (*wild == '*') {
+      wild++;
+   }
+   return !*wild;
+}
+
 static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
    int filenum = 0;
    FILE **fdp;
@@ -451,26 +541,50 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
 
       case ATOMMC_CMD_DIR_OPEN:
          {
+            // Separate wildcard and path
+            parseWildcard(atommc);
+
+#ifdef ATOMMC_DEBUG
+            printf("wildcard = %s\n", wildPattern);
+            printf("path = %s\n", getfilename(atommc));
+#endif
+
             // Cache the directory entries, in sorted order
-            DIR *dir = opendir(atommc->cwd);
+            DIR *dir = opendir(getfilename(atommc));
             if (dir) {
                struct dirent *entry;
                int i = 0;
                while (i < MAX_DIRSIZE && (entry = readdir(dir)) != NULL) {
-                  char *ptr = atommc->dirlist[i];
+
+                  uint8_t attr = 0;
+
+                  if (!wildcmp(wildPattern, entry->d_name)) {
+                     continue;
+                  }
+
+                  char *ptr = atommc->dirlist[i].name;
                   if (entry->d_type == DT_DIR) {
+                     attr |= ATOMMC_ATTR_DIR;
                      *ptr++ = '<';
                   }
+
                   strcpy(ptr, entry->d_name);
                   ptr = ptr + strlen(entry->d_name);
                   if (entry->d_type == DT_DIR) {
                      *ptr++ = '>';
                      *ptr++ = 0;
                   }
+
+                  // TODO: populate the length field
+                  atommc->dirlist[i].len = 0;
+
+                  atommc->dirlist[i].attr = attr;
 #ifdef ATOMMC_DEBUG
-                  printf("dir:%s\n", atommc->dirlist[i]);
+                  printf("dirent name:%s\n",   atommc->dirlist[i].name);
+                  printf("dirent  len:%d\n",   atommc->dirlist[i].len);
+                  printf("dirent attr:%02x\n", atommc->dirlist[i].attr);
 #endif
-                  atommc->dirsorted[i] = atommc->dirlist[i];
+                  atommc->dirsorted[i] = &atommc->dirlist[i];
                   i++;
                }
                closedir(dir);
@@ -489,9 +603,19 @@ static void _atommc_write(atommc_t* atommc, uint8_t addr, uint8_t data) {
             // Return the next name from the caches directory
             if (atommc->dir_index < atommc->dir_size) {
                memset(atommc->global_data, 0, 0x100);
-               char *name = atommc->dirsorted[atommc->dir_index];
+               char *name = atommc->dirsorted[atommc->dir_index]->name;
                strcpy((char *)atommc->global_data, name);
-               // TODO: Attribute Byte + Length should follow the name
+               // Additional metadata folloes the name
+               uint8_t *ptr = (uint8_t *)(atommc->global_data) + strlen(name) + 1;
+               // Copy the attribute byte
+               *ptr++ = atommc->dirsorted[atommc->dir_index]->attr;
+               // Copy the length
+               uint32_t len = atommc->dirsorted[atommc->dir_index]->len;
+               for (int i = 0; i < 4; i++) {
+                  *ptr++ = len & 0xff;
+                  len >>= 8;
+               }
+               // Move on to the entry
                atommc->dir_index++;
                atommc->response = ATOMMC_STATUS_OK;
 #ifdef ATOMMC_DEBUG
