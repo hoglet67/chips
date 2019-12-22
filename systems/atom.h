@@ -490,7 +490,12 @@ uint64_t _atom_tick(atom_t* sys, uint64_t pins) {
     mc6847_tick(&sys->vdg);
 
     /* tick the 6522 VIA */
-    m6522_tick(&sys->via);
+    if (m6522_tick(&sys->via, pins & ~M6502_IRQ) & M6502_IRQ) {
+        pins |= M6502_IRQ;
+    }
+    else {
+        pins &= ~M6502_IRQ;
+    }
 
     /* tick the AtoMMC */
     if (sys->atommc_enabled) {
