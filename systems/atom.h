@@ -816,9 +816,9 @@ static void _atom_init_keymap(atom_t* sys) {
     kbd_register_key(&sys->kbd,       SAPP_KEYCODE_END-128, 5, 1, 0); // Copy       (mapped to End)
     kbd_register_key(&sys->kbd,     SAPP_KEYCODE_ENTER-128, 6, 1, 0); // Return     (mapped to Return
     kbd_register_key(&sys->kbd,        SAPP_KEYCODE_UP-128, 2, 0, 0); // Up/Down    (mapped to Up Arrow)
+    kbd_register_key(&sys->kbd,      SAPP_KEYCODE_MENU-128, 2, 0, 0); // Up/Down    (mapped to Menu)
     kbd_register_key(&sys->kbd,     SAPP_KEYCODE_RIGHT-128, 3, 0, 0); // Right/Left (mapped to Right Arrow)
     kbd_register_key(&sys->kbd, SAPP_KEYCODE_CAPS_LOCK-128, 4, 0, 0); // Caps       (mapped to Caps Lock)
-    kbd_register_key(&sys->kbd,      SAPP_KEYCODE_MENU-128, 4, 0, 0); // Caps       (mapped to Menu)
     kbd_register_key(&sys->kbd,       SAPP_KEYCODE_TAB-128, 5, 0, 0); // ^          (mapped to Tab)
     kbd_register_key(&sys->kbd,                        ']', 6, 0, 0); // ]
     kbd_register_key(&sys->kbd,                       '\\', 7, 0, 0); // Back Slash
